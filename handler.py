@@ -59,10 +59,17 @@ def _b64_to_file(b64_str: str, tmp: Path, name: str) -> Path:
 _UPLOAD_LOG = []  # collected per-file upload attempts for return in output
 
 
+_CATBOX_BLOCK_EXTS = {".ply", ".xyz", ".dxf", ".pts", ".las"}  # V20.1: catbox silently 0-bytes these on download
+
+
 def _upload_catbox(path: Path, timeout: int = 120) -> str:
-    """Upload file to catbox.moe permanent, return URL. Try requests then urllib then curl."""
+    """Upload file to catbox.moe permanent, return URL. Try requests then urllib then curl.
+    V20.1: skips extensions catbox is known to break (returns URL 200 but download 0B)."""
     if not path.exists() or path.stat().st_size == 0:
         _UPLOAD_LOG.append(f"{path.name}: skip empty/missing")
+        return ""
+    if path.suffix.lower() in _CATBOX_BLOCK_EXTS:
+        _UPLOAD_LOG.append(f"{path.name}: skip catbox (ext {path.suffix} blocked -- silently 0-bytes on DL). Cascade to GH Releases.")
         return ""
     # 1. requests (usually present via transformers)
     try:
