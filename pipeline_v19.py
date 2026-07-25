@@ -58,6 +58,7 @@ class PipelineV19Config:
     # Wrap (V19: camera-UV by default; xatlas rollback via flag)
     e_use_camera_uv: bool = True
     wrap_atlas_res: int = 8192              # V19 uplift 4096 -> 8192
+    wrap_auto_detect_view_dir: bool = True  # V20 fix: pick +Z or -Z by head-normal count
     wrap_front_normal_threshold: float = 0.15
     wrap_neutral_border_frac: float = 0.05
     wrap_clahe_clip: float = 3.0
@@ -128,6 +129,7 @@ def run_pipeline_v19(cfg: PipelineV19Config) -> Path:
                 target_height_mm=cfg.target_height_mm,
                 atlas_res=cfg.wrap_atlas_res,
                 front_axis=cfg.front_axis,
+                auto_detect_view_dir=cfg.wrap_auto_detect_view_dir,
                 front_normal_threshold=cfg.wrap_front_normal_threshold,
                 neutral_border_frac=cfg.wrap_neutral_border_frac,
                 clahe_clip=cfg.wrap_clahe_clip, clahe_tile=cfg.wrap_clahe_tile,
