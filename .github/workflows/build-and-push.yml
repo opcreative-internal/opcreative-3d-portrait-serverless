@@ -6,10 +6,17 @@ on:
     paths:
       - 'Dockerfile'
       - 'handler.py'
-      - 'pipeline_v14.py'
+      - 'verify_imports.py'
       - 'pipeline_v11_depth_umeyama.py'
+      - 'pipeline_v14.py'
+      - 'pipeline_v15.py'
+      - 'pipeline_v16.py'
+      - 'pipeline_v17.py'
       - 'module_a_retune.py'
       - 'module_e_texture.py'
+      - 'module_e_engrave.py'
+      - 'module_e_ssle.py'
+      - 'module_f_graft.py'
       - '.github/workflows/build-and-push.yml'
   workflow_dispatch:
 
