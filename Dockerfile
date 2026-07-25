@@ -85,45 +85,14 @@ from huggingface_hub import hf_hub_download; \
 p = hf_hub_download(repo_id='depth-anything/Depth-Anything-V2-Base', filename='depth_anything_v2_vitb.pth'); \
 print('DAv2 vitb cached at:', p)" || echo "DAv2 preload warning (will fetch at runtime)"
 
-# App code (goes LAST so handler edits don't invalidate heavy layers above)
+# App code + verifier (goes LAST so edits don't invalidate heavy layers above)
 WORKDIR /app
-COPY handler.py pipeline_v14.py pipeline_v11_depth_umeyama.py module_a_retune.py module_e_texture.py /app/
+COPY handler.py pipeline_v14.py pipeline_v11_depth_umeyama.py module_a_retune.py module_e_texture.py verify_imports.py /app/
 
-# COMPREHENSIVE build-time import verification. If ANY module used at runtime is
-# missing, build FAILS here (not at cold-start on first job). Grep of imports from
-# pipeline_v14.py, pipeline_v11_depth_umeyama.py, module_e_texture.py, module_a_retune.py,
-# handler.py drove this list.
-RUN python -c "\
-import sys, importlib; \
-mods = [ \
-    'torch', 'torchvision', \
-    'numpy', 'PIL', 'PIL.Image', \
-    'cv2', \
-    'mediapipe', 'mediapipe.tasks.python', 'mediapipe.tasks.python.vision', \
-    'trimesh', 'trimesh.visual.texture', 'trimesh.visual.material', \
-    'pygltflib', \
-    'xatlas', \
-    'pymeshlab', \
-    'scipy', 'scipy.spatial', \
-    'skimage', 'skimage.transform', \
-    'huggingface_hub', \
-    'fast_simplification', \
-    'runpod', \
-    'timm', \
-    'depth_anything_v2', 'depth_anything_v2.dpt', \
-    'omegaconf', 'einops', 'diffusers', 'transformers', 'accelerate', \
-]; \
-failed = []; \
-for m in mods: \
-    try: importlib.import_module(m); \
-    except Exception as e: failed.append((m, str(e))); \
-print('=== IMPORT VERIFY ==='); \
-[print('  OK', m) for m in mods if not any(f[0]==m for f in failed)]; \
-[print('  FAIL', m, '->', err) for m, err in failed]; \
-assert not failed, f'MISSING MODULES: {failed}'; \
-print('=== ALL', len(mods), 'MODULES OK ==='); \
-import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda); \
-print('face_landmarker.task:', __import__('os').path.getsize('/workspace/face_landmarker.task'), 'bytes')"
+# Comprehensive build-time verification. Import list is a real .py file (not python -c)
+# because multi-line `for/try:` inside python -c is a SyntaxError. This step FAILS the
+# build if ANY runtime dependency is missing.
+RUN python /app/verify_imports.py
 
 # Serverless entrypoint
 CMD ["python", "-u", "/app/handler.py"]
