@@ -193,6 +193,11 @@ def handler(job: dict) -> dict:
                 result["relief_size_bytes"] = relief_path.stat().st_size
             if transform_path.exists():
                 result["transform"] = json.loads(transform_path.read_text())
+            # V15 extra: head_only sidecar written by module_f_graft
+            head_only_path = output.parent / f"{output.stem}_head_only.glb"
+            if head_only_path.exists():
+                result["head_only_b64"] = _file_to_b64(head_only_path)
+                result["head_only_size_bytes"] = head_only_path.stat().st_size
 
             # Log tail
             if log_path.exists():
