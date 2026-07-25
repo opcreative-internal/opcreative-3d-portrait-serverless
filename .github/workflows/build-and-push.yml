@@ -1,0 +1,53 @@
+name: Build and Push GHCR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'handler.py'
+      - 'pipeline_v14.py'
+      - 'pipeline_v11_depth_umeyama.py'
+      - 'module_a_retune.py'
+      - 'module_e_texture.py'
+      - '.github/workflows/build-and-push.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/cowork-3d-v14:latest
+            ghcr.io/${{ github.repository_owner }}/cowork-3d-v14:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
