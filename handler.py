@@ -312,6 +312,7 @@ def handler(job: dict) -> dict:
                         seed=int(job_input.get("seed", 42)),
                         e_use_camera_uv=bool(job_input.get("e_use_camera_uv", True)),
                         wrap_atlas_res=int(job_input.get("wrap_atlas_res", 8192)),
+                        wrap_auto_detect_view_dir=bool(job_input.get("wrap_auto_detect_view_dir", True)),
                         wrap_front_normal_threshold=float(job_input.get("wrap_front_normal_threshold", 0.15)),
                         wrap_neutral_border_frac=float(job_input.get("wrap_neutral_border_frac", 0.05)),
                         wrap_clahe_clip=float(job_input.get("wrap_clahe_clip", 3.0)),
