@@ -126,51 +126,76 @@ def handler(job: dict) -> dict:
                     redirect_stdout(log_f), redirect_stderr(log_f):
                 sys.path.insert(0, "/app")
                 pipeline_version = str(job_input.get("pipeline_version", "v14")).lower()
-                if pipeline_version == "v15":
+                if pipeline_version == "v16":
+                    from pipeline_v16 import PipelineV16Config as _PipelineCfg
+                    from pipeline_v16 import run_pipeline_v16 as _run_pipeline
+                elif pipeline_version == "v15":
                     from pipeline_v15 import PipelineV15Config as _PipelineCfg
                     from pipeline_v15 import run_pipeline_v15 as _run_pipeline
                 else:
                     from pipeline_v14 import PipelineV14Config as _PipelineCfg
                     from pipeline_v14 import run_pipeline_v14 as _run_pipeline
 
-                cfg_kwargs = dict(
-                    input_image=in_img,
-                    input_mesh=in_mesh,
-                    base_mesh=in_base,
-                    output=output,
-                    workdir=Path("/models"),
-
-                    run_module_a=bool(job_input.get("run_module_a", False)),
-                    run_module_cd=bool(job_input.get("run_module_cd", True)),
-                    run_module_e=bool(job_input.get("run_module_e", True)),
-
-                    a_num_inference_steps=int(job_input.get("a_num_inference_steps", 75)),
-                    a_guidance_scale=float(job_input.get("a_guidance_scale", 7.0)),
-                    a_faces=int(job_input.get("a_faces", 500_000)),
-                    a_seed=int(job_input.get("a_seed", 42)),
-                    a_timeout_s=int(job_input.get("a_timeout_s", 300)),
-
-                    cd_dav2_model=str(job_input.get("cd_dav2_model", "base")),
-                    cd_mask_expand=float(job_input.get("cd_mask_expand", 1.2)),
-                    cd_face_weight=float(job_input.get("cd_face_weight", 0.7)),
-                    cd_umeyama_clamp_min=float(job_input.get("cd_umeyama_clamp_min", 0.5)),
-                    cd_umeyama_clamp_max=float(job_input.get("cd_umeyama_clamp_max", 1.5)),
-                    cd_emboss_strength=float(job_input.get("cd_emboss_strength", 0.010)),
-
-                    e_uv_bake_res=int(job_input.get("e_uv_bake_res", 2048)),
-                    e_dot_density_scale=float(job_input.get("e_dot_density_scale", 1.0)),
-                    e_dot_size_px=int(job_input.get("e_dot_size_px", 3)),
-                    e_dot_luminance_curve=str(job_input.get("e_dot_luminance_curve", "linear")),
-
-                    dry_run=False,
-                )
-
-                if pipeline_version == "v15":
-                    # v15-specific knob passthroughs
-                    cfg_kwargs["f_weld_tol_frac"] = float(job_input.get("f_weld_tol_frac", 0.01))
-                    cfg_kwargs["f_smooth_iterations"] = int(job_input.get("f_smooth_iterations", 3))
-                    cfg_kwargs["f_smooth_ring_depth"] = int(job_input.get("f_smooth_ring_depth", 2))
-                    cfg_kwargs["f_smooth_lambda"] = float(job_input.get("f_smooth_lambda", 0.5))
+                if pipeline_version == "v16":
+                    # V16 has a different config surface than V14/V15
+                    if in_mesh is None:
+                        raise ValueError("pipeline_version=v16 requires mesh_b64 or mesh_url")
+                    cfg_kwargs = dict(
+                        input_image=in_img,
+                        input_mesh=in_mesh,
+                        output=output,
+                        workdir=Path("/models"),
+                        run_module_cd=bool(job_input.get("run_module_cd", True)),
+                        run_module_e_engrave=bool(job_input.get("run_module_e_engrave", True)),
+                        cd_dav2_model=str(job_input.get("cd_dav2_model", "base")),
+                        cd_mask_expand=float(job_input.get("cd_mask_expand", 1.2)),
+                        cd_face_weight=float(job_input.get("cd_face_weight", 0.7)),
+                        cd_umeyama_clamp_min=float(job_input.get("cd_umeyama_clamp_min", 0.5)),
+                        cd_umeyama_clamp_max=float(job_input.get("cd_umeyama_clamp_max", 1.5)),
+                        cd_emboss_strength=float(job_input.get("cd_emboss_strength", 0.010)),
+                        e_emboss_strength=float(job_input.get("e_emboss_strength", 0.004)),
+                        e_dot_count=int(job_input.get("e_dot_count", 20000)),
+                        e_dot_min_radius_px=float(job_input.get("e_dot_min_radius_px", 3.0)),
+                        e_influence_radius_px=float(job_input.get("e_influence_radius_px", 6.0)),
+                        e_lum_curve=str(job_input.get("e_lum_curve", "linear")),
+                        e_lum_gamma=float(job_input.get("e_lum_gamma", 2.2)),
+                        e_front_axis=str(job_input.get("e_front_axis", "+Z")),
+                        e_seed=int(job_input.get("e_seed", 42)),
+                        dry_run=False,
+                    )
+                else:
+                    # V14 / V15 config surface
+                    cfg_kwargs = dict(
+                        input_image=in_img,
+                        input_mesh=in_mesh,
+                        base_mesh=in_base,
+                        output=output,
+                        workdir=Path("/models"),
+                        run_module_a=bool(job_input.get("run_module_a", False)),
+                        run_module_cd=bool(job_input.get("run_module_cd", True)),
+                        run_module_e=bool(job_input.get("run_module_e", True)),
+                        a_num_inference_steps=int(job_input.get("a_num_inference_steps", 75)),
+                        a_guidance_scale=float(job_input.get("a_guidance_scale", 7.0)),
+                        a_faces=int(job_input.get("a_faces", 500_000)),
+                        a_seed=int(job_input.get("a_seed", 42)),
+                        a_timeout_s=int(job_input.get("a_timeout_s", 300)),
+                        cd_dav2_model=str(job_input.get("cd_dav2_model", "base")),
+                        cd_mask_expand=float(job_input.get("cd_mask_expand", 1.2)),
+                        cd_face_weight=float(job_input.get("cd_face_weight", 0.7)),
+                        cd_umeyama_clamp_min=float(job_input.get("cd_umeyama_clamp_min", 0.5)),
+                        cd_umeyama_clamp_max=float(job_input.get("cd_umeyama_clamp_max", 1.5)),
+                        cd_emboss_strength=float(job_input.get("cd_emboss_strength", 0.010)),
+                        e_uv_bake_res=int(job_input.get("e_uv_bake_res", 2048)),
+                        e_dot_density_scale=float(job_input.get("e_dot_density_scale", 1.0)),
+                        e_dot_size_px=int(job_input.get("e_dot_size_px", 3)),
+                        e_dot_luminance_curve=str(job_input.get("e_dot_luminance_curve", "linear")),
+                        dry_run=False,
+                    )
+                    if pipeline_version == "v15":
+                        cfg_kwargs["f_weld_tol_frac"] = float(job_input.get("f_weld_tol_frac", 0.01))
+                        cfg_kwargs["f_smooth_iterations"] = int(job_input.get("f_smooth_iterations", 3))
+                        cfg_kwargs["f_smooth_ring_depth"] = int(job_input.get("f_smooth_ring_depth", 2))
+                        cfg_kwargs["f_smooth_lambda"] = float(job_input.get("f_smooth_lambda", 0.5))
                 cfg = _PipelineCfg(**cfg_kwargs)
                 _run_pipeline(cfg)
 
