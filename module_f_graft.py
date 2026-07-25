@@ -253,22 +253,18 @@ def run_module_f(cfg: ModuleFConfig) -> Path:
     head_verts_out = verts_smoothed[:body_face_offset]
     body_verts_out = verts_smoothed[body_face_offset:]
 
-    from trimesh.visual.material import PBRMaterial
-
-    # Fix trimesh GLB export dimension mismatch: face_colors must be shape (F, 4)
-    # (broadcasting a single (4,) triggers "dimension mismatch" in exchange/export
-    # when scene has mixed visual types). Tile to per-face array.
-    skin_rgba = np.array([198, 158, 128, 255], dtype=np.uint8)
-    head_face_colors = np.tile(skin_rgba, (len(h_faces), 1))
-
+    # Export as TWO SEPARATE GLBs (no Scene). Prior attempt to use a Scene with
+    # mixed visual types (ColorVisuals + TextureVisuals) triggered a
+    # dimension-mismatch inside trimesh.exchange.gltf when it auto-converted the
+    # head's face_colors to vertex_colors via sparse matmul.
+    #
+    # Kent can import both files in Blender / any viewer -- boundary vertices
+    # are already welded/smoothed so head + body align visually.
     head_out = trimesh.Trimesh(
         vertices=head_verts_out,
         faces=h_faces,
         process=False,
     )
-    # Attach visual AFTER construction so it binds to the mesh cleanly.
-    head_out.visual.face_colors = head_face_colors
-
     body_out = trimesh.Trimesh(
         vertices=body_verts_out,
         faces=b_faces,
@@ -276,22 +272,16 @@ def run_module_f(cfg: ModuleFConfig) -> Path:
         process=False,
     )
 
-    # Build scene explicitly with named geometries -- multi-mesh GLB output.
-    # Each mesh keeps its own visual (head vertex-color, body UV+texture).
-    scene = trimesh.Scene()
-    scene.add_geometry(head_out, node_name="head_with_relief")
-    scene.add_geometry(body_out, node_name="body_textured")
-    try:
-        scene.export(cfg.output_glb)
-    except Exception as e:
-        # Fallback: export each mesh separately, then dump body as the "main"
-        # output so Kent still gets the textured body. Better than nothing.
-        print(f"      scene export failed: {e}; falling back to body-only export",
-              flush=True)
-        body_out.export(cfg.output_glb)
-        head_only_path = cfg.output_glb.with_name(cfg.output_glb.stem + "_head_only.glb")
-        head_out.export(head_only_path)
-        print(f"      wrote {head_only_path}", flush=True)
+    # Main output = body textured (Kent's "final" mesh with UV + photo texture)
+    body_out.export(cfg.output_glb)
+    print(f"      wrote {cfg.output_glb} (body textured, "
+          f"{cfg.output_glb.stat().st_size/1024/1024:.2f} MB)", flush=True)
+
+    # Sidecar = head with C+D relief geometry, plain mesh (default gray)
+    head_only_path = cfg.output_glb.with_name(cfg.output_glb.stem + "_head_only.glb")
+    head_out.export(head_only_path)
+    print(f"      wrote {head_only_path} (head only, "
+          f"{head_only_path.stat().st_size/1024/1024:.2f} MB)", flush=True)
     sz = cfg.output_glb.stat().st_size / 1024 / 1024
     print(f"      wrote {cfg.output_glb} ({sz:.2f} MB, took {time.time()-t0:.1f}s)",
           flush=True)
