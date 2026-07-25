@@ -101,7 +101,83 @@ def _upload_catbox(path: Path, timeout: int = 120) -> str:
     return ""
 
 
-def _upload_return_url_or_b64(path: Path, max_inline_bytes: int = 3_000_000) -> dict:
+_GH_RELEASE_ID_CACHE = {}  # repo -> release id (per-worker cache)
+
+def _upload_github_release(path: Path, gh_pat: str, gh_repo: str,
+                           tag: str = "runpod-outputs", asset_name: str = None,
+                           timeout: int = 180) -> str:
+    """Upload file as GitHub Release asset. Returns browser_download_url.
+    Uses fixed tag; asset names must be unique per file (job_id suffix)."""
+    if not gh_pat or not gh_repo or not path.exists():
+        return ""
+    if asset_name is None:
+        asset_name = path.name
+    try:
+        import requests
+    except Exception:
+        _UPLOAD_LOG.append(f"{path.name}: gh_release requests import fail")
+        return ""
+    hdr = {"Authorization": f"token {gh_pat}",
+           "Accept": "application/vnd.github+json",
+           "User-Agent": "runpod-handler"}
+    # Ensure release exists
+    release_id = _GH_RELEASE_ID_CACHE.get(gh_repo)
+    if not release_id:
+        try:
+            r = requests.get(f"https://api.github.com/repos/{gh_repo}/releases/tags/{tag}",
+                             headers=hdr, timeout=30)
+            if r.status_code == 200:
+                release_id = r.json()["id"]
+            else:
+                # create
+                r = requests.post(f"https://api.github.com/repos/{gh_repo}/releases",
+                                  headers=hdr, timeout=30,
+                                  json={"tag_name": tag, "name": tag,
+                                        "body": "RunPod handler output uploads",
+                                        "draft": False, "prerelease": False})
+                if r.status_code in (200, 201):
+                    release_id = r.json()["id"]
+                else:
+                    _UPLOAD_LOG.append(f"{path.name}: gh release create http={r.status_code}")
+                    return ""
+            _GH_RELEASE_ID_CACHE[gh_repo] = release_id
+        except Exception as e:
+            _UPLOAD_LOG.append(f"{path.name}: gh release setup EXC {type(e).__name__}")
+            return ""
+    # Delete existing asset with same name (idempotent re-upload)
+    try:
+        r = requests.get(f"https://api.github.com/repos/{gh_repo}/releases/{release_id}/assets",
+                         headers=hdr, timeout=30)
+        if r.status_code == 200:
+            for a in r.json():
+                if a.get("name") == asset_name:
+                    requests.delete(f"https://api.github.com/repos/{gh_repo}/releases/assets/{a['id']}",
+                                    headers=hdr, timeout=30)
+                    break
+    except Exception:
+        pass
+    # Upload
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        upload_hdr = {"Authorization": f"token {gh_pat}",
+                      "Content-Type": "application/octet-stream",
+                      "User-Agent": "runpod-handler"}
+        r = requests.post(
+            f"https://uploads.github.com/repos/{gh_repo}/releases/{release_id}/assets",
+            params={"name": asset_name}, headers=upload_hdr, data=data, timeout=timeout,
+        )
+        _UPLOAD_LOG.append(f"{path.name}: gh_release http={r.status_code} sz={len(data)}")
+        if r.status_code in (200, 201):
+            return r.json().get("browser_download_url", "")
+    except Exception as e:
+        _UPLOAD_LOG.append(f"{path.name}: gh_release EXC {type(e).__name__}: {str(e)[:100]}")
+    return ""
+
+
+def _upload_return_url_or_b64(path: Path, max_inline_bytes: int = 3_000_000,
+                              gh_pat: str = "", gh_repo: str = "",
+                              job_id: str = "") -> dict:
     """Small files (<=3MB) inline as b64. Large files upload to catbox and return URL.
     If upload FAILS for a large file, return sentinel (do NOT inline b64 - would blow
     RunPod response cap and get whole output dropped)."""
@@ -110,9 +186,16 @@ def _upload_return_url_or_b64(path: Path, max_inline_bytes: int = 3_000_000) -> 
     sz = path.stat().st_size
     if sz <= max_inline_bytes:
         return {"b64": _file_to_b64(path), "size_bytes": sz}
+    # Try catbox first (fastest when working)
     url = _upload_catbox(path)
     if url:
         return {"url": url, "size_bytes": sz}
+    # Fallback: GitHub Releases (requires PAT)
+    if gh_pat and gh_repo:
+        asset = path.name if not job_id else f"{job_id[:12]}_{path.name}"
+        url = _upload_github_release(path, gh_pat, gh_repo, asset_name=asset)
+        if url:
+            return {"url": url, "size_bytes": sz, "hoster": "github_release"}
     # Do NOT inline b64 - would trigger RunPod response cap drop
     return {"size_bytes": sz, "upload_failed": True}
 
@@ -346,14 +429,20 @@ def handler(job: dict) -> dict:
                     "handler_wall_s": round(time.time() - t0, 2),
                 },
             }
+            # Upload options passed via job input for GH Releases fallback
+            _gh_pat = str(job_input.get("gh_pat") or job_input.get("github_pat") or "")
+            _gh_repo = str(job_input.get("gh_repo") or "opcreative-internal/opcreative-3d-portrait-serverless")
+            _job_id_hint = str(job.get("id", ""))
+            def _up(p): return _upload_return_url_or_b64(p, gh_pat=_gh_pat, gh_repo=_gh_repo, job_id=_job_id_hint)
             if output.exists():
-                info = _upload_return_url_or_b64(output)
+                info = _up(output)
                 if "url" in info: result["glb_url"] = info["url"]
                 if "b64" in info: result["glb_b64"] = info["b64"]
                 if info: result["glb_size_bytes"] = info["size_bytes"]
                 if info.get("upload_failed"): result["glb_upload_failed"] = True
+                if info.get("hoster"): result["glb_hoster"] = info["hoster"]
             if relief_path.exists():
-                info = _upload_return_url_or_b64(relief_path)
+                info = _up(relief_path)
                 if "url" in info: result["relief_url"] = info["url"]
                 if "b64" in info: result["relief_b64"] = info["b64"]
                 if info: result["relief_size_bytes"] = info["size_bytes"]
@@ -376,7 +465,7 @@ def handler(job: dict) -> dict:
                 ("ply", ply_path), ("xyz", xyz_path), ("obj", obj_path),
                 ("mtl", mtl_path), ("stl", stl_path), ("texture_png", tex_path),
             ]:
-                info = _upload_return_url_or_b64(p)
+                info = _up(p)
                 if not info:
                     continue
                 if "url" in info:
@@ -386,6 +475,8 @@ def handler(job: dict) -> dict:
                 result[f"{name}_size_bytes"] = info["size_bytes"]
                 if info.get("upload_failed"):
                     result[f"{name}_upload_failed"] = True
+                if info.get("hoster"):
+                    result[f"{name}_hoster"] = info["hoster"]
 
             # Log tail
             if log_path.exists():
