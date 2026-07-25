@@ -47,11 +47,8 @@ class PipelineV17Config:
     cd_umeyama_clamp_max: float = 1.5
     cd_emboss_strength: float = 0.025
 
-    # SSLE knobs (Fable 5 v2 locked)
-    cube_w_mm: float = 60.0
-    cube_d_mm: float = 60.0
-    cube_h_mm: float = 80.0
-    margin_mm: float = 5.0
+    # SSLE knobs (Kent clarify: subject-only, no cube bounds)
+    target_height_mm: float = 70.0
     target_count: int = 300_000
     accept_low: int = 150_000
     accept_high: int = 450_000
@@ -115,8 +112,7 @@ def run_pipeline_v17(cfg: PipelineV17Config) -> Path:
         e_cfg = ModuleESSLEConfig(
             input_mesh=current_mesh, input_image=cfg.input_image,
             output_ply=cfg.output,
-            cube_w_mm=cfg.cube_w_mm, cube_d_mm=cfg.cube_d_mm, cube_h_mm=cfg.cube_h_mm,
-            margin_mm=cfg.margin_mm,
+            target_height_mm=cfg.target_height_mm,
             target_count=cfg.target_count, accept_low=cfg.accept_low,
             accept_high=cfg.accept_high, n_candidates=cfg.n_candidates,
             r_min_mm=cfg.r_min_mm, r_min_floor_mm=cfg.r_min_floor_mm,
@@ -149,8 +145,7 @@ def build_argparser():
     ap.add_argument("--no-run-module-cd", dest="run_module_cd", action="store_false")
     ap.add_argument("--no-run-module-e-ssle", dest="run_module_e_ssle", action="store_false")
     ap.add_argument("--target-count", type=int, default=300_000)
-    ap.add_argument("--cube-w-mm", type=float, default=60.0)
-    ap.add_argument("--cube-h-mm", type=float, default=80.0)
+    ap.add_argument("--target-height-mm", type=float, default=70.0)
     ap.add_argument("--cd-emboss-strength", type=float, default=0.025)
     ap.add_argument("--dry-run", action="store_true")
     ap.set_defaults(run_module_cd=True, run_module_e_ssle=True)
@@ -164,7 +159,7 @@ def main(argv=None):
         workdir=a.workdir,
         run_module_cd=a.run_module_cd, run_module_e_ssle=a.run_module_e_ssle,
         target_count=a.target_count,
-        cube_w_mm=a.cube_w_mm, cube_h_mm=a.cube_h_mm,
+        target_height_mm=a.target_height_mm,
         cd_emboss_strength=a.cd_emboss_strength,
         dry_run=a.dry_run,
     )
