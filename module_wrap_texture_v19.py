@@ -38,6 +38,7 @@ class ModuleWrapV19Config:
     target_height_mm: float = 70.0
     atlas_res: int = 8192           # per Fable v3 (up from V18's 4096)
     front_axis: str = "+Z"
+    auto_detect_view_dir: bool = True     # V20: pick +Z vs -Z by head-normal fraction
     front_normal_threshold: float = 0.15   # v.normal.z >= this = front-facing
     neutral_border_frac: float = 0.05      # right 5% of atlas = neutral color for back-face verts
     clahe_clip: float = 3.0
@@ -50,6 +51,24 @@ class ModuleWrapV19Config:
         self.input_mesh = Path(self.input_mesh)
         self.input_image = Path(self.input_image)
         self.out_stem = Path(self.out_stem)
+
+
+def _auto_detect_front_axis(verts, normals, top_frac=0.25, threshold=0.15):
+    """V20 fix: pick +Z or -Z by counting how many HEAD verts (top top_frac of Y range)
+    have normals pointing that way. Assumes head is at top of mesh (TripoSG convention).
+    Returns picked axis + diagnostic (score_pz, score_nz, n_top)."""
+    import numpy as np
+    y = verts[:, 1]
+    y_thresh = y.max() - (y.max() - y.min()) * top_frac
+    top_mask = y >= y_thresh
+    n_top = int(top_mask.sum())
+    if n_top < 10:
+        return "+Z", (0.0, 0.0, n_top)  # fallback no clear head
+    n_z_top = normals[top_mask, 2]
+    score_pz = float((n_z_top > threshold).sum()) / n_top
+    score_nz = float((n_z_top < -threshold).sum()) / n_top
+    picked = "+Z" if score_pz >= score_nz else "-Z"
+    return picked, (score_pz, score_nz, n_top)
 
 
 def _sobel_normal_map(gray_img, ksize=3, strength=1.0):
@@ -110,6 +129,18 @@ def run_module_wrap_v19(cfg: ModuleWrapV19Config):
     mesh_mm = trimesh.Trimesh(vertices=verts_mm, faces=faces, process=False)
     normals = np.asarray(mesh_mm.vertex_normals, dtype=np.float32)
     print(f"      scale={s:.4f} mm/unit, bbox_mm={(bbox_size*s).round(2).tolist()}", flush=True)
+
+    # V20 auto-detect view axis (fix for V19 misalignment where TripoSG face pointed -Z)
+    if cfg.auto_detect_view_dir:
+        picked, (score_pz, score_nz, n_top) = _auto_detect_front_axis(
+            verts_mm, normals, top_frac=0.25, threshold=cfg.front_normal_threshold
+        )
+        print(f"      auto-detect: head_verts={n_top:,} score_+Z={score_pz:.3f} score_-Z={score_nz:.3f} -> picked {picked}",
+              flush=True)
+        if picked != cfg.front_axis:
+            print(f"      OVERRIDE: config had front_axis={cfg.front_axis}, using {picked}",
+                  flush=True)
+            cfg.front_axis = picked
 
     # 2. Build 8192 texture: photo grayscale-CLAHE in main area, neutral color right strip
     print(f"\n[2/6] Build {cfg.atlas_res}x{cfg.atlas_res} texture (CLAHE + neutral border)", flush=True)
