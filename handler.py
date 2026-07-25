@@ -126,7 +126,10 @@ def handler(job: dict) -> dict:
                     redirect_stdout(log_f), redirect_stderr(log_f):
                 sys.path.insert(0, "/app")
                 pipeline_version = str(job_input.get("pipeline_version", "v14")).lower()
-                if pipeline_version == "v16":
+                if pipeline_version == "v17":
+                    from pipeline_v17 import PipelineV17Config as _PipelineCfg
+                    from pipeline_v17 import run_pipeline_v17 as _run_pipeline
+                elif pipeline_version == "v16":
                     from pipeline_v16 import PipelineV16Config as _PipelineCfg
                     from pipeline_v16 import run_pipeline_v16 as _run_pipeline
                 elif pipeline_version == "v15":
@@ -136,7 +139,44 @@ def handler(job: dict) -> dict:
                     from pipeline_v14 import PipelineV14Config as _PipelineCfg
                     from pipeline_v14 import run_pipeline_v14 as _run_pipeline
 
-                if pipeline_version == "v16":
+                if pipeline_version == "v17":
+                    # V17 SSLE: output is .ply (redirect from output.glb -> output.ply)
+                    if in_mesh is None:
+                        raise ValueError("pipeline_version=v17 requires mesh_b64 or mesh_url")
+                    output_ply = output.with_suffix(".ply")
+                    cfg_kwargs = dict(
+                        input_image=in_img,
+                        input_mesh=in_mesh,
+                        output=output_ply,
+                        workdir=Path("/models"),
+                        run_module_cd=bool(job_input.get("run_module_cd", True)),
+                        run_module_e_ssle=bool(job_input.get("run_module_e_ssle", True)),
+                        cd_dav2_model=str(job_input.get("cd_dav2_model", "base")),
+                        cd_mask_expand=float(job_input.get("cd_mask_expand", 1.2)),
+                        cd_face_weight=float(job_input.get("cd_face_weight", 0.7)),
+                        cd_umeyama_clamp_min=float(job_input.get("cd_umeyama_clamp_min", 0.5)),
+                        cd_umeyama_clamp_max=float(job_input.get("cd_umeyama_clamp_max", 1.5)),
+                        cd_emboss_strength=float(job_input.get("cd_emboss_strength", 0.025)),
+                        cube_w_mm=float(job_input.get("cube_w_mm", 60.0)),
+                        cube_d_mm=float(job_input.get("cube_d_mm", 60.0)),
+                        cube_h_mm=float(job_input.get("cube_h_mm", 80.0)),
+                        margin_mm=float(job_input.get("margin_mm", 5.0)),
+                        target_count=int(job_input.get("target_count", 300_000)),
+                        accept_low=int(job_input.get("accept_low", 150_000)),
+                        accept_high=int(job_input.get("accept_high", 450_000)),
+                        n_candidates=int(job_input.get("n_candidates", 2_500_000)),
+                        r_min_mm=float(job_input.get("r_min_mm", 0.18)),
+                        r_min_floor_mm=float(job_input.get("r_min_floor_mm", 0.15)),
+                        w_floor=float(job_input.get("w_floor", 0.08)),
+                        w_gamma=float(job_input.get("w_gamma", 1.6)),
+                        w_back=float(job_input.get("w_back", 0.30)),
+                        face_boost=float(job_input.get("face_boost", 1.3)),
+                        normal_jitter_mm=float(job_input.get("normal_jitter_mm", 0.15)),
+                        front_axis=str(job_input.get("front_axis", "+Z")),
+                        seed=int(job_input.get("seed", 42)),
+                        dry_run=False,
+                    )
+                elif pipeline_version == "v16":
                     # V16 has a different config surface than V14/V15
                     if in_mesh is None:
                         raise ValueError("pipeline_version=v16 requires mesh_b64 or mesh_url")
@@ -223,6 +263,15 @@ def handler(job: dict) -> dict:
             if head_only_path.exists():
                 result["head_only_b64"] = _file_to_b64(head_only_path)
                 result["head_only_size_bytes"] = head_only_path.stat().st_size
+            # V17 SSLE: PLY point cloud + XYZ fallback
+            ply_path = output.with_suffix(".ply")
+            if ply_path.exists():
+                result["ply_b64"] = _file_to_b64(ply_path)
+                result["ply_size_bytes"] = ply_path.stat().st_size
+            xyz_path = output.with_suffix(".xyz")
+            if xyz_path.exists():
+                result["xyz_b64"] = _file_to_b64(xyz_path)
+                result["xyz_size_bytes"] = xyz_path.stat().st_size
 
             # Log tail
             if log_path.exists():
