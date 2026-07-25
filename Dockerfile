@@ -4,11 +4,15 @@
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
+# PYTHONPATH: put git-cloned repos on path so their inner packages import cleanly.
+# /opt/DAv2 contains a `depth_anything_v2/` package (pipeline_v11 imports it).
+# /opt/TripoSG contains scripts/inference_triposg (module_a_retune uses it as subprocess).
 ENV HF_HOME=/models/hf \
     PYTHONUNBUFFERED=1 \
     TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0" \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/opt/DAv2:/opt/TripoSG
 
 # System deps (minimal - just what pipeline_v14 needs at runtime)
 RUN apt-get update -qq \
@@ -58,10 +62,13 @@ RUN git clone --depth 1 https://github.com/VAST-AI-Research/TripoSG.git /opt/Tri
     && rm -rf /opt/TripoSG/.git \
     && python -m pip install -r /opt/TripoSG/requirements.txt || echo "TripoSG reqs partial"
 
-# Depth-Anything-V2 code
+# Depth-Anything-V2 code (imports `depth_anything_v2.dpt.DepthAnythingV2`)
+# PYTHONPATH env above adds /opt/DAv2 to sys.path -- proper mechanism (site-packages
+# dist-packages layout differs between distros so writing a .pth file is fragile).
+# Also install its extra deps if any (typically just torch/torchvision/timm already).
 RUN git clone --depth 1 https://github.com/DepthAnything/Depth-Anything-V2 /opt/DAv2 \
     && rm -rf /opt/DAv2/.git \
-    && echo "/opt/DAv2" > /usr/lib/python3.10/site-packages/dav2.pth || true
+    && (test -f /opt/DAv2/requirements.txt && python -m pip install --no-deps -r /opt/DAv2/requirements.txt || echo "DAv2 has no extra reqs")
 
 # Pre-fetch face_landmarker (~4MB) into /workspace where pipeline_v11 default expects it.
 # Also set env var to be explicit; and mirror to /models.
@@ -82,11 +89,41 @@ print('DAv2 vitb cached at:', p)" || echo "DAv2 preload warning (will fetch at r
 WORKDIR /app
 COPY handler.py pipeline_v14.py pipeline_v11_depth_umeyama.py module_a_retune.py module_e_texture.py /app/
 
-# Quick sanity import test at build time
+# COMPREHENSIVE build-time import verification. If ANY module used at runtime is
+# missing, build FAILS here (not at cold-start on first job). Grep of imports from
+# pipeline_v14.py, pipeline_v11_depth_umeyama.py, module_e_texture.py, module_a_retune.py,
+# handler.py drove this list.
 RUN python -c "\
-import sys; sys.path.insert(0, '/opt/TripoSG'); sys.path.insert(0, '/opt/DAv2'); \
-import torch, torchvision, PIL, cv2, mediapipe, trimesh, xatlas, pymeshlab, runpod; \
-print('OK torch:', torch.__version__, 'cuda:', torch.version.cuda)"
+import sys, importlib; \
+mods = [ \
+    'torch', 'torchvision', \
+    'numpy', 'PIL', 'PIL.Image', \
+    'cv2', \
+    'mediapipe', 'mediapipe.tasks.python', 'mediapipe.tasks.python.vision', \
+    'trimesh', 'trimesh.visual.texture', 'trimesh.visual.material', \
+    'pygltflib', \
+    'xatlas', \
+    'pymeshlab', \
+    'scipy', 'scipy.spatial', \
+    'skimage', 'skimage.transform', \
+    'huggingface_hub', \
+    'fast_simplification', \
+    'runpod', \
+    'timm', \
+    'depth_anything_v2', 'depth_anything_v2.dpt', \
+    'omegaconf', 'einops', 'diffusers', 'transformers', 'accelerate', \
+]; \
+failed = []; \
+for m in mods: \
+    try: importlib.import_module(m); \
+    except Exception as e: failed.append((m, str(e))); \
+print('=== IMPORT VERIFY ==='); \
+[print('  OK', m) for m in mods if not any(f[0]==m for f in failed)]; \
+[print('  FAIL', m, '->', err) for m, err in failed]; \
+assert not failed, f'MISSING MODULES: {failed}'; \
+print('=== ALL', len(mods), 'MODULES OK ==='); \
+import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda); \
+print('face_landmarker.task:', __import__('os').path.getsize('/workspace/face_landmarker.task'), 'bytes')"
 
 # Serverless entrypoint
 CMD ["python", "-u", "/app/handler.py"]
