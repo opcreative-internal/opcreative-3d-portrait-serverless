@@ -13,8 +13,10 @@ on:
       - 'pipeline_v16.py'
       - 'pipeline_v17.py'
       - 'pipeline_v18.py'
+      - 'pipeline_v19.py'
       - 'module_a_retune.py'
       - 'module_wrap_texture.py'
+      - 'module_wrap_texture_v19.py'
       - 'module_e_texture.py'
       - 'module_e_engrave.py'
       - 'module_e_ssle.py'
@@ -68,3 +70,5 @@ jobs:
 # V18d trigger 20260725-100906
 
 # V18e trigger 20260725-114228
+
+# V19 trigger 20260725-131924
