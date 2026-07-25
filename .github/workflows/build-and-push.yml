@@ -24,6 +24,13 @@ on:
       - '.github/workflows/build-and-push.yml'
   workflow_dispatch:
 
+# Serialize builds: cancel any in-progress build when a new push lands. Prevents
+# the V19-era race where 3 parallel builds all pushed to :latest and whichever
+# finished LAST won -- often the earliest-started one with a stale Dockerfile.
+concurrency:
+  group: ghcr-build
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -72,3 +79,5 @@ jobs:
 # V18e trigger 20260725-114228
 
 # V19 trigger 20260725-131924
+
+# V19b race-fix trigger 20260725-135745
