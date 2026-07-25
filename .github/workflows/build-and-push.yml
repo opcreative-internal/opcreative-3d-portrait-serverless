@@ -1,4 +1,4 @@
-name: Build and Push GHCR
+﻿name: Build and Push GHCR
 
 on:
   push:
@@ -60,3 +60,5 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/cowork-3d-v14:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+# V18b trigger 20260725-090036
