@@ -238,12 +238,21 @@ def run_module_e_ssle(cfg: ModuleESSLEConfig) -> Path:
         result_normals = cand_face_normals[accepted]
         print(f"      accepting {len(result_pts):,} (outside band)", flush=True)
 
-    # ---- 6. Normal jitter (no cube bounds -- pure subject point cloud)
-    print(f"\n[6/7] Normal jitter (subject-only, no cube filter)", flush=True)
+    # ---- 6. Normal jitter + sample per-vertex RGB from photo (V18 addition)
+    print(f"\n[6/7] Normal jitter + per-vertex RGB sample", flush=True)
     jitter = rng.uniform(-cfg.normal_jitter_mm, cfg.normal_jitter_mm,
                         size=(len(result_pts), 1)).astype(np.float32)
     result_pts_j = result_pts + result_normals * jitter
-    print(f"      after jitter: {len(result_pts_j):,} points", flush=True)
+    # Sample RGB per point (ortho project back to photo pixel)
+    # Recompute UV coords for accepted pts using same projection as candidates
+    xy_p = result_pts_j[:, :2]
+    xy_p_norm = (xy_p - mm_bbox_min[:2]) / np.maximum(mm_bbox_max[:2] - mm_bbox_min[:2], 1e-6)
+    xy_p_norm[:, 1] = 1.0 - xy_p_norm[:, 1]
+    if cfg.front_axis == "-Z": xy_p_norm[:, 0] = 1.0 - xy_p_norm[:, 0]
+    px_p = np.clip((xy_p_norm[:, 0] * photo_w).astype(np.int32), 0, photo_w - 1)
+    py_p = np.clip((xy_p_norm[:, 1] * photo_h).astype(np.int32), 0, photo_h - 1)
+    result_rgb = photo[py_p, px_p]  # (N, 3) uint8
+    print(f"      after jitter: {len(result_pts_j):,} points, per-vert RGB sampled", flush=True)
 
     # NN distance sanity
     if len(result_pts_j) > 100:
@@ -265,14 +274,18 @@ def run_module_e_ssle(cfg: ModuleESSLEConfig) -> Path:
     with open(cfg.output_ply, "w") as f:
         f.write("ply\n")
         f.write("format ascii 1.0\n")
-        f.write(f"comment units mm, Y-up, front {cfg.front_axis}, subject-only\n")
+        f.write(f"comment units mm, Y-up, front {cfg.front_axis}, subject-only, per-vertex RGB from photo\n")
         f.write(f"element vertex {n}\n")
         f.write("property float x\n")
         f.write("property float y\n")
         f.write("property float z\n")
+        f.write("property uchar red\n")
+        f.write("property uchar green\n")
+        f.write("property uchar blue\n")
         f.write("end_header\n")
-        for p in result_pts_j:
-            f.write(f"{p[0]:.4f} {p[1]:.4f} {p[2]:.4f}\n")
+        for i, p in enumerate(result_pts_j):
+            r, g, b = int(result_rgb[i, 0]), int(result_rgb[i, 1]), int(result_rgb[i, 2])
+            f.write(f"{p[0]:.4f} {p[1]:.4f} {p[2]:.4f} {r} {g} {b}\n")
     ply_sz = cfg.output_ply.stat().st_size / 1024 / 1024
     print(f"      wrote {cfg.output_ply} ({n:,} pts, {ply_sz:.2f} MB)", flush=True)
 
