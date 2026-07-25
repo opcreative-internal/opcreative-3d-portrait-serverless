@@ -87,7 +87,7 @@ print('DAv2 vitb cached at:', p)" || echo "DAv2 preload warning (will fetch at r
 
 # App code + verifier (goes LAST so edits don't invalidate heavy layers above)
 WORKDIR /app
-COPY handler.py pipeline_v14.py pipeline_v15.py pipeline_v11_depth_umeyama.py module_a_retune.py module_e_texture.py module_f_graft.py verify_imports.py /app/
+COPY handler.py pipeline_v14.py pipeline_v15.py pipeline_v16.py pipeline_v11_depth_umeyama.py module_a_retune.py module_e_texture.py module_e_engrave.py module_f_graft.py verify_imports.py /app/
 
 # Comprehensive build-time verification. Import list is a real .py file (not python -c)
 # because multi-line `for/try:` inside python -c is a SyntaxError. This step FAILS the
