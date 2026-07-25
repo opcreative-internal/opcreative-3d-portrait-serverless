@@ -272,7 +272,10 @@ def handler(job: dict) -> dict:
                     redirect_stdout(log_f), redirect_stderr(log_f):
                 sys.path.insert(0, "/app")
                 pipeline_version = str(job_input.get("pipeline_version", "v14")).lower()
-                if pipeline_version == "v18":
+                if pipeline_version == "v19":
+                    from pipeline_v19 import PipelineV19Config as _PipelineCfg
+                    from pipeline_v19 import run_pipeline_v19 as _run_pipeline
+                elif pipeline_version == "v18":
                     from pipeline_v18 import PipelineV18Config as _PipelineCfg
                     from pipeline_v18 import run_pipeline_v18 as _run_pipeline
                 elif pipeline_version == "v17":
@@ -288,7 +291,36 @@ def handler(job: dict) -> dict:
                     from pipeline_v14 import PipelineV14Config as _PipelineCfg
                     from pipeline_v14 import run_pipeline_v14 as _run_pipeline
 
-                if pipeline_version == "v18":
+                if pipeline_version == "v19":
+                    if in_mesh is None:
+                        raise ValueError("pipeline_version=v19 requires mesh_b64 or mesh_url")
+                    cfg_kwargs = dict(
+                        input_image=in_img, input_mesh=in_mesh, output=output,
+                        workdir=Path("/models"),
+                        run_module_cd=bool(job_input.get("run_module_cd", True)),
+                        run_module_e_ssle=bool(job_input.get("run_module_e_ssle", True)),
+                        run_module_wrap=bool(job_input.get("run_module_wrap", True)),
+                        cd_dav2_model=str(job_input.get("cd_dav2_model", "base")),
+                        cd_face_weight=float(job_input.get("cd_face_weight", 0.7)),
+                        cd_emboss_strength=float(job_input.get("cd_emboss_strength", 0.025)),
+                        target_height_mm=float(job_input.get("target_height_mm", 70.0)),
+                        target_count=int(job_input.get("target_count", 300_000)),
+                        r_min_mm=float(job_input.get("r_min_mm", 0.18)),
+                        face_boost=float(job_input.get("face_boost", 1.3)),
+                        normal_jitter_mm=float(job_input.get("normal_jitter_mm", 0.15)),
+                        front_axis=str(job_input.get("front_axis", "+Z")),
+                        seed=int(job_input.get("seed", 42)),
+                        e_use_camera_uv=bool(job_input.get("e_use_camera_uv", True)),
+                        wrap_atlas_res=int(job_input.get("wrap_atlas_res", 8192)),
+                        wrap_front_normal_threshold=float(job_input.get("wrap_front_normal_threshold", 0.15)),
+                        wrap_neutral_border_frac=float(job_input.get("wrap_neutral_border_frac", 0.05)),
+                        wrap_clahe_clip=float(job_input.get("wrap_clahe_clip", 3.0)),
+                        wrap_clahe_tile=int(job_input.get("wrap_clahe_tile", 16)),
+                        wrap_sobel_ksize=int(job_input.get("wrap_sobel_ksize", 3)),
+                        wrap_sobel_strength=float(job_input.get("wrap_sobel_strength", 1.0)),
+                        dry_run=False,
+                    )
+                elif pipeline_version == "v18":
                     if in_mesh is None:
                         raise ValueError("pipeline_version=v18 requires mesh_b64 or mesh_url")
                     cfg_kwargs = dict(
@@ -461,9 +493,11 @@ def handler(job: dict) -> dict:
             mtl_path = output.with_suffix(".mtl")
             stl_path = output.with_suffix(".stl")
             tex_path = output.parent / f"{output.stem}_texture.png"
+            normal_path = output.parent / f"{output.stem}_normal.png"
             for name, p in [
                 ("ply", ply_path), ("xyz", xyz_path), ("obj", obj_path),
                 ("mtl", mtl_path), ("stl", stl_path), ("texture_png", tex_path),
+                ("normal_png", normal_path),
             ]:
                 info = _up(p)
                 if not info:
