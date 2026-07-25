@@ -259,10 +259,13 @@ def run_module_e_ssle(cfg: ModuleESSLEConfig) -> Path:
     # ---- 7. Write PLY (ASCII) + XYZ fallback
     print(f"\n[7/7] Write PLY + XYZ", flush=True)
     n = len(result_pts_j)
+    # Log final bbox for QA
+    p_min = result_pts_j.min(0); p_max = result_pts_j.max(0)
+    print(f"      subject bbox_mm: min={p_min.round(2).tolist()} max={p_max.round(2).tolist()}", flush=True)
     with open(cfg.output_ply, "w") as f:
         f.write("ply\n")
         f.write("format ascii 1.0\n")
-        f.write(f"comment units mm, Y-up, front {cfg.front_axis}, cube {cfg.cube_w_mm}x{cfg.cube_d_mm}x{cfg.cube_h_mm}\n")
+        f.write(f"comment units mm, Y-up, front {cfg.front_axis}, subject-only\n")
         f.write(f"element vertex {n}\n")
         f.write("property float x\n")
         f.write("property float y\n")
@@ -288,10 +291,7 @@ def build_argparser():
     ap.add_argument("--input-mesh", required=True, type=Path)
     ap.add_argument("--input-image", required=True, type=Path)
     ap.add_argument("--output-ply", required=True, type=Path)
-    ap.add_argument("--cube-w-mm", type=float, default=60.0)
-    ap.add_argument("--cube-d-mm", type=float, default=60.0)
-    ap.add_argument("--cube-h-mm", type=float, default=80.0)
-    ap.add_argument("--margin-mm", type=float, default=5.0)
+    ap.add_argument("--target-height-mm", type=float, default=70.0)
     ap.add_argument("--target-count", type=int, default=300_000)
     ap.add_argument("--n-candidates", type=int, default=2_500_000)
     ap.add_argument("--r-min-mm", type=float, default=0.18)
@@ -305,8 +305,8 @@ def main(argv=None):
     a = build_argparser().parse_args(argv)
     cfg = ModuleESSLEConfig(
         input_mesh=a.input_mesh, input_image=a.input_image, output_ply=a.output_ply,
-        cube_w_mm=a.cube_w_mm, cube_d_mm=a.cube_d_mm, cube_h_mm=a.cube_h_mm,
-        margin_mm=a.margin_mm, target_count=a.target_count, n_candidates=a.n_candidates,
+        target_height_mm=a.target_height_mm,
+        target_count=a.target_count, n_candidates=a.n_candidates,
         r_min_mm=a.r_min_mm, front_axis=a.front_axis, seed=a.seed, dry_run=a.dry_run,
     )
     run_module_e_ssle(cfg)
