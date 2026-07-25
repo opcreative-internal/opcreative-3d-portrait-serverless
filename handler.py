@@ -56,14 +56,34 @@ def _b64_to_file(b64_str: str, tmp: Path, name: str) -> Path:
     return p
 
 
+_UPLOAD_LOG = []  # collected per-file upload attempts for return in output
+
+
 def _upload_catbox(path: Path, timeout: int = 120) -> str:
-    """Upload a file to catbox.moe (permanent), return URL. Empty string on fail."""
-    import mimetypes
-    import subprocess
+    """Upload file to catbox.moe permanent, return URL. Try requests then urllib then curl."""
     if not path.exists() or path.stat().st_size == 0:
+        _UPLOAD_LOG.append(f"{path.name}: skip empty/missing")
         return ""
-    # Prefer native curl (available in image)
+    # 1. requests (usually present via transformers)
     try:
+        import requests
+        with open(path, "rb") as f:
+            r = requests.post(
+                "https://catbox.moe/user/api.php",
+                data={"reqtype": "fileupload"},
+                files={"fileToUpload": (path.name, f, "application/octet-stream")},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=timeout,
+            )
+        out = (r.text or "").strip()
+        _UPLOAD_LOG.append(f"{path.name}: requests http={r.status_code} out_head={out[:80]!r}")
+        if out.startswith("http"):
+            return out
+    except Exception as e:
+        _UPLOAD_LOG.append(f"{path.name}: requests EXC {type(e).__name__}: {str(e)[:120]}")
+    # 2. subprocess curl fallback
+    try:
+        import subprocess
         r = subprocess.run(
             ["curl", "-sS", "--connect-timeout", "30", "--max-time", str(timeout),
              "-F", "reqtype=fileupload",
@@ -73,16 +93,18 @@ def _upload_catbox(path: Path, timeout: int = 120) -> str:
             capture_output=True, timeout=timeout + 15, text=True,
         )
         out = (r.stdout or "").strip()
+        _UPLOAD_LOG.append(f"{path.name}: curl rc={r.returncode} out_head={out[:80]!r}")
         if out.startswith("http"):
             return out
-    except Exception:
-        pass
+    except Exception as e:
+        _UPLOAD_LOG.append(f"{path.name}: curl EXC {type(e).__name__}: {str(e)[:120]}")
     return ""
 
 
 def _upload_return_url_or_b64(path: Path, max_inline_bytes: int = 3_000_000) -> dict:
-    """Return {url, size} if uploaded, else {b64, size} for small files.
-    Threshold ~3 MB (well under RunPod response cap when combined). Otherwise upload."""
+    """Small files (<=3MB) inline as b64. Large files upload to catbox and return URL.
+    If upload FAILS for a large file, return sentinel (do NOT inline b64 - would blow
+    RunPod response cap and get whole output dropped)."""
     if not path.exists():
         return {}
     sz = path.stat().st_size
@@ -91,8 +113,8 @@ def _upload_return_url_or_b64(path: Path, max_inline_bytes: int = 3_000_000) -> 
     url = _upload_catbox(path)
     if url:
         return {"url": url, "size_bytes": sz}
-    # Fallback: inline the base64 even though it's over threshold (may get dropped by RunPod)
-    return {"b64": _file_to_b64(path), "size_bytes": sz, "upload_failed": True}
+    # Do NOT inline b64 - would trigger RunPod response cap drop
+    return {"size_bytes": sz, "upload_failed": True}
 
 
 def _url_to_file(url: str, tmp: Path, name: str, timeout: int = 60) -> Path:
@@ -124,6 +146,8 @@ def _gpu_info() -> dict:
 
 def handler(job: dict) -> dict:
     """Handle a single inference job."""
+    global _UPLOAD_LOG
+    _UPLOAD_LOG = []  # reset per-job upload log
     t0 = time.time()
     job_input = job.get("input", {}) or {}
     try:
@@ -367,6 +391,27 @@ def handler(job: dict) -> dict:
             if log_path.exists():
                 lines = log_path.read_text(errors="replace").splitlines()
                 result["log_tail"] = "\n".join(lines[-40:])
+
+            # Upload attempt diagnostics (V18c: catbox reachability from RunPod worker)
+            if _UPLOAD_LOG:
+                result["upload_log"] = _UPLOAD_LOG[-40:]
+
+            # Summary always present so we know handler completed even if all uploads dropped
+            result["_v18_summary"] = {
+                "files_collected": {
+                    k: v for k, v in {
+                        "glb": result.get("glb_size_bytes"),
+                        "ply": result.get("ply_size_bytes"),
+                        "xyz": result.get("xyz_size_bytes"),
+                        "obj": result.get("obj_size_bytes"),
+                        "mtl": result.get("mtl_size_bytes"),
+                        "stl": result.get("stl_size_bytes"),
+                        "texture_png": result.get("texture_png_size_bytes"),
+                    }.items() if v is not None
+                },
+                "urls_returned": [k for k in result if k.endswith("_url")],
+                "b64_returned": [k for k in result if k.endswith("_b64")],
+            }
 
             return result
 
