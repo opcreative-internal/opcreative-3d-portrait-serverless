@@ -254,22 +254,44 @@ def run_module_f(cfg: ModuleFConfig) -> Path:
     body_verts_out = verts_smoothed[body_face_offset:]
 
     from trimesh.visual.material import PBRMaterial
-    from trimesh.visual.color import ColorVisuals
+
+    # Fix trimesh GLB export dimension mismatch: face_colors must be shape (F, 4)
+    # (broadcasting a single (4,) triggers "dimension mismatch" in exchange/export
+    # when scene has mixed visual types). Tile to per-face array.
+    skin_rgba = np.array([198, 158, 128, 255], dtype=np.uint8)
+    head_face_colors = np.tile(skin_rgba, (len(h_faces), 1))
 
     head_out = trimesh.Trimesh(
         vertices=head_verts_out,
         faces=h_faces,
-        visual=ColorVisuals(face_colors=[198, 158, 128, 255]),
         process=False,
     )
+    # Attach visual AFTER construction so it binds to the mesh cleanly.
+    head_out.visual.face_colors = head_face_colors
+
     body_out = trimesh.Trimesh(
         vertices=body_verts_out,
         faces=b_faces,
         visual=body_visual,
         process=False,
     )
-    scene = trimesh.Scene([head_out, body_out])
-    scene.export(cfg.output_glb)
+
+    # Build scene explicitly with named geometries -- multi-mesh GLB output.
+    # Each mesh keeps its own visual (head vertex-color, body UV+texture).
+    scene = trimesh.Scene()
+    scene.add_geometry(head_out, node_name="head_with_relief")
+    scene.add_geometry(body_out, node_name="body_textured")
+    try:
+        scene.export(cfg.output_glb)
+    except Exception as e:
+        # Fallback: export each mesh separately, then dump body as the "main"
+        # output so Kent still gets the textured body. Better than nothing.
+        print(f"      scene export failed: {e}; falling back to body-only export",
+              flush=True)
+        body_out.export(cfg.output_glb)
+        head_only_path = cfg.output_glb.with_name(cfg.output_glb.stem + "_head_only.glb")
+        head_out.export(head_only_path)
+        print(f"      wrote {head_only_path}", flush=True)
     sz = cfg.output_glb.stat().st_size / 1024 / 1024
     print(f"      wrote {cfg.output_glb} ({sz:.2f} MB, took {time.time()-t0:.1f}s)",
           flush=True)
