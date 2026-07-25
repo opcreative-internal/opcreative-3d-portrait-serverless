@@ -56,6 +56,45 @@ def _b64_to_file(b64_str: str, tmp: Path, name: str) -> Path:
     return p
 
 
+def _upload_catbox(path: Path, timeout: int = 120) -> str:
+    """Upload a file to catbox.moe (permanent), return URL. Empty string on fail."""
+    import mimetypes
+    import subprocess
+    if not path.exists() or path.stat().st_size == 0:
+        return ""
+    # Prefer native curl (available in image)
+    try:
+        r = subprocess.run(
+            ["curl", "-sS", "--connect-timeout", "30", "--max-time", str(timeout),
+             "-F", "reqtype=fileupload",
+             "-F", f"fileToUpload=@{path}",
+             "-A", "Mozilla/5.0",
+             "https://catbox.moe/user/api.php"],
+            capture_output=True, timeout=timeout + 15, text=True,
+        )
+        out = (r.stdout or "").strip()
+        if out.startswith("http"):
+            return out
+    except Exception:
+        pass
+    return ""
+
+
+def _upload_return_url_or_b64(path: Path, max_inline_bytes: int = 3_000_000) -> dict:
+    """Return {url, size} if uploaded, else {b64, size} for small files.
+    Threshold ~3 MB (well under RunPod response cap when combined). Otherwise upload."""
+    if not path.exists():
+        return {}
+    sz = path.stat().st_size
+    if sz <= max_inline_bytes:
+        return {"b64": _file_to_b64(path), "size_bytes": sz}
+    url = _upload_catbox(path)
+    if url:
+        return {"url": url, "size_bytes": sz}
+    # Fallback: inline the base64 even though it's over threshold (may get dropped by RunPod)
+    return {"b64": _file_to_b64(path), "size_bytes": sz, "upload_failed": True}
+
+
 def _url_to_file(url: str, tmp: Path, name: str, timeout: int = 60) -> Path:
     """Download URL to local file. Used to bypass /run 10MB payload limit."""
     p = tmp / name
@@ -284,11 +323,16 @@ def handler(job: dict) -> dict:
                 },
             }
             if output.exists():
-                result["glb_b64"] = _file_to_b64(output)
-                result["glb_size_bytes"] = output.stat().st_size
+                info = _upload_return_url_or_b64(output)
+                if "url" in info: result["glb_url"] = info["url"]
+                if "b64" in info: result["glb_b64"] = info["b64"]
+                if info: result["glb_size_bytes"] = info["size_bytes"]
+                if info.get("upload_failed"): result["glb_upload_failed"] = True
             if relief_path.exists():
-                result["relief_b64"] = _file_to_b64(relief_path)
-                result["relief_size_bytes"] = relief_path.stat().st_size
+                info = _upload_return_url_or_b64(relief_path)
+                if "url" in info: result["relief_url"] = info["url"]
+                if "b64" in info: result["relief_b64"] = info["b64"]
+                if info: result["relief_size_bytes"] = info["size_bytes"]
             if transform_path.exists():
                 result["transform"] = json.loads(transform_path.read_text())
             # V15 extra: head_only sidecar written by module_f_graft
@@ -296,32 +340,28 @@ def handler(job: dict) -> dict:
             if head_only_path.exists():
                 result["head_only_b64"] = _file_to_b64(head_only_path)
                 result["head_only_size_bytes"] = head_only_path.stat().st_size
-            # V17 SSLE: PLY point cloud + XYZ fallback
+            # V17/V18: SSLE + wrap texture outputs. V18c: use URL upload for large files
+            # to bypass RunPod ~10-20MB response cap. Files <=3MB stay inline (b64).
             ply_path = output.with_suffix(".ply")
-            if ply_path.exists():
-                result["ply_b64"] = _file_to_b64(ply_path)
-                result["ply_size_bytes"] = ply_path.stat().st_size
             xyz_path = output.with_suffix(".xyz")
-            if xyz_path.exists():
-                result["xyz_b64"] = _file_to_b64(xyz_path)
-                result["xyz_size_bytes"] = xyz_path.stat().st_size
-            # V18 extras: OBJ + MTL + PNG texture + STL + GLB (glb already captured above)
             obj_path = output.with_suffix(".obj")
             mtl_path = output.with_suffix(".mtl")
             stl_path = output.with_suffix(".stl")
             tex_path = output.parent / f"{output.stem}_texture.png"
-            if obj_path.exists():
-                result["obj_b64"] = _file_to_b64(obj_path)
-                result["obj_size_bytes"] = obj_path.stat().st_size
-            if mtl_path.exists():
-                result["mtl_b64"] = _file_to_b64(mtl_path)
-                result["mtl_size_bytes"] = mtl_path.stat().st_size
-            if stl_path.exists():
-                result["stl_b64"] = _file_to_b64(stl_path)
-                result["stl_size_bytes"] = stl_path.stat().st_size
-            if tex_path.exists():
-                result["texture_png_b64"] = _file_to_b64(tex_path)
-                result["texture_png_size_bytes"] = tex_path.stat().st_size
+            for name, p in [
+                ("ply", ply_path), ("xyz", xyz_path), ("obj", obj_path),
+                ("mtl", mtl_path), ("stl", stl_path), ("texture_png", tex_path),
+            ]:
+                info = _upload_return_url_or_b64(p)
+                if not info:
+                    continue
+                if "url" in info:
+                    result[f"{name}_url"] = info["url"]
+                if "b64" in info:
+                    result[f"{name}_b64"] = info["b64"]
+                result[f"{name}_size_bytes"] = info["size_bytes"]
+                if info.get("upload_failed"):
+                    result[f"{name}_upload_failed"] = True
 
             # Log tail
             if log_path.exists():
