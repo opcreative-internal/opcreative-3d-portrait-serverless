@@ -125,7 +125,13 @@ def handler(job: dict) -> dict:
             with open(log_path, "w", buffering=1) as log_f, \
                     redirect_stdout(log_f), redirect_stderr(log_f):
                 sys.path.insert(0, "/app")
-                from pipeline_v14 import PipelineV14Config, run_pipeline_v14
+                pipeline_version = str(job_input.get("pipeline_version", "v14")).lower()
+                if pipeline_version == "v15":
+                    from pipeline_v15 import PipelineV15Config as _PipelineCfg
+                    from pipeline_v15 import run_pipeline_v15 as _run_pipeline
+                else:
+                    from pipeline_v14 import PipelineV14Config as _PipelineCfg
+                    from pipeline_v14 import run_pipeline_v14 as _run_pipeline
 
                 cfg_kwargs = dict(
                     input_image=in_img,
@@ -159,8 +165,14 @@ def handler(job: dict) -> dict:
                     dry_run=False,
                 )
 
-                cfg = PipelineV14Config(**cfg_kwargs)
-                run_pipeline_v14(cfg)
+                if pipeline_version == "v15":
+                    # v15-specific knob passthroughs
+                    cfg_kwargs["f_weld_tol_frac"] = float(job_input.get("f_weld_tol_frac", 0.01))
+                    cfg_kwargs["f_smooth_iterations"] = int(job_input.get("f_smooth_iterations", 3))
+                    cfg_kwargs["f_smooth_ring_depth"] = int(job_input.get("f_smooth_ring_depth", 2))
+                    cfg_kwargs["f_smooth_lambda"] = float(job_input.get("f_smooth_lambda", 0.5))
+                cfg = _PipelineCfg(**cfg_kwargs)
+                _run_pipeline(cfg)
 
             # ---- Collect outputs ----
             stem = output.stem
