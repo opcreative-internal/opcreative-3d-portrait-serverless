@@ -79,7 +79,7 @@ def run_pipeline_v17(cfg: PipelineV17Config) -> Path:
     print(f"  input image  : {cfg.input_image}")
     print(f"  input mesh   : {cfg.input_mesh}")
     print(f"  output       : {cfg.output}")
-    print(f"  cube (mm)    : {cfg.cube_w_mm} x {cfg.cube_d_mm} x {cfg.cube_h_mm}")
+    print(f"  height (mm)  : {cfg.target_height_mm} (subject-only, no cube bounds)")
     print(f"  target       : {cfg.target_count} points")
     print("=" * 66, flush=True)
     if cfg.dry_run: print("[dry-run] validated"); return cfg.output
