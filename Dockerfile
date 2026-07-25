@@ -63,14 +63,24 @@ RUN git clone --depth 1 https://github.com/DepthAnything/Depth-Anything-V2 /opt/
     && rm -rf /opt/DAv2/.git \
     && echo "/opt/DAv2" > /usr/lib/python3.10/site-packages/dav2.pth || true
 
-# App code
+# Pre-fetch face_landmarker (~4MB) into /workspace where pipeline_v11 default expects it.
+# Also set env var to be explicit; and mirror to /models.
+RUN mkdir -p /workspace /models \
+    && curl -fL -o /workspace/face_landmarker.task \
+        "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task" \
+    && cp /workspace/face_landmarker.task /models/face_landmarker.task
+ENV FACE_LANDMARKER_MODEL=/workspace/face_landmarker.task
+
+# Pre-fetch Depth-Anything-V2 base weights (~380MB) to HF cache so first job is fast.
+# Use hf_hub_download inside python to place in canonical HF_HOME layout.
+RUN python -c "\
+from huggingface_hub import hf_hub_download; \
+p = hf_hub_download(repo_id='depth-anything/Depth-Anything-V2-Base', filename='depth_anything_v2_vitb.pth'); \
+print('DAv2 vitb cached at:', p)" || echo "DAv2 preload warning (will fetch at runtime)"
+
+# App code (goes LAST so handler edits don't invalidate heavy layers above)
 WORKDIR /app
 COPY handler.py pipeline_v14.py pipeline_v11_depth_umeyama.py module_a_retune.py module_e_texture.py /app/
-
-# Pre-fetch face_landmarker (only 4MB) - weights >100MB download at cold-start
-RUN mkdir -p /models \
-    && curl -fL -o /models/face_landmarker.task \
-        "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 
 # Quick sanity import test at build time
 RUN python -c "\
