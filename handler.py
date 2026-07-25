@@ -126,7 +126,10 @@ def handler(job: dict) -> dict:
                     redirect_stdout(log_f), redirect_stderr(log_f):
                 sys.path.insert(0, "/app")
                 pipeline_version = str(job_input.get("pipeline_version", "v14")).lower()
-                if pipeline_version == "v17":
+                if pipeline_version == "v18":
+                    from pipeline_v18 import PipelineV18Config as _PipelineCfg
+                    from pipeline_v18 import run_pipeline_v18 as _run_pipeline
+                elif pipeline_version == "v17":
                     from pipeline_v17 import PipelineV17Config as _PipelineCfg
                     from pipeline_v17 import run_pipeline_v17 as _run_pipeline
                 elif pipeline_version == "v16":
@@ -139,7 +142,40 @@ def handler(job: dict) -> dict:
                     from pipeline_v14 import PipelineV14Config as _PipelineCfg
                     from pipeline_v14 import run_pipeline_v14 as _run_pipeline
 
-                if pipeline_version == "v17":
+                if pipeline_version == "v18":
+                    if in_mesh is None:
+                        raise ValueError("pipeline_version=v18 requires mesh_b64 or mesh_url")
+                    cfg_kwargs = dict(
+                        input_image=in_img, input_mesh=in_mesh, output=output,
+                        workdir=Path("/models"),
+                        run_module_cd=bool(job_input.get("run_module_cd", True)),
+                        run_module_e_ssle=bool(job_input.get("run_module_e_ssle", True)),
+                        run_module_wrap=bool(job_input.get("run_module_wrap", True)),
+                        cd_dav2_model=str(job_input.get("cd_dav2_model", "base")),
+                        cd_face_weight=float(job_input.get("cd_face_weight", 0.7)),
+                        cd_emboss_strength=float(job_input.get("cd_emboss_strength", 0.025)),
+                        target_height_mm=float(job_input.get("target_height_mm", 70.0)),
+                        target_count=int(job_input.get("target_count", 300_000)),
+                        accept_low=int(job_input.get("accept_low", 150_000)),
+                        accept_high=int(job_input.get("accept_high", 450_000)),
+                        n_candidates=int(job_input.get("n_candidates", 2_500_000)),
+                        r_min_mm=float(job_input.get("r_min_mm", 0.18)),
+                        r_min_floor_mm=float(job_input.get("r_min_floor_mm", 0.15)),
+                        w_floor=float(job_input.get("w_floor", 0.08)),
+                        w_gamma=float(job_input.get("w_gamma", 1.6)),
+                        w_back=float(job_input.get("w_back", 0.30)),
+                        face_boost=float(job_input.get("face_boost", 1.3)),
+                        normal_jitter_mm=float(job_input.get("normal_jitter_mm", 0.15)),
+                        front_axis=str(job_input.get("front_axis", "+Z")),
+                        seed=int(job_input.get("seed", 42)),
+                        wrap_atlas_res=int(job_input.get("wrap_atlas_res", 4096)),
+                        wrap_target_faces=int(job_input.get("wrap_target_faces", 60_000)),
+                        wrap_xatlas_timeout_s=int(job_input.get("wrap_xatlas_timeout_s", 180)),
+                        wrap_clahe_clip=float(job_input.get("wrap_clahe_clip", 3.0)),
+                        wrap_clahe_tile=int(job_input.get("wrap_clahe_tile", 16)),
+                        dry_run=False,
+                    )
+                elif pipeline_version == "v17":
                     # V17 SSLE: output is .ply (redirect from output.glb -> output.ply)
                     if in_mesh is None:
                         raise ValueError("pipeline_version=v17 requires mesh_b64 or mesh_url")
@@ -269,6 +305,23 @@ def handler(job: dict) -> dict:
             if xyz_path.exists():
                 result["xyz_b64"] = _file_to_b64(xyz_path)
                 result["xyz_size_bytes"] = xyz_path.stat().st_size
+            # V18 extras: OBJ + MTL + PNG texture + STL + GLB (glb already captured above)
+            obj_path = output.with_suffix(".obj")
+            mtl_path = output.with_suffix(".mtl")
+            stl_path = output.with_suffix(".stl")
+            tex_path = output.parent / f"{output.stem}_texture.png"
+            if obj_path.exists():
+                result["obj_b64"] = _file_to_b64(obj_path)
+                result["obj_size_bytes"] = obj_path.stat().st_size
+            if mtl_path.exists():
+                result["mtl_b64"] = _file_to_b64(mtl_path)
+                result["mtl_size_bytes"] = mtl_path.stat().st_size
+            if stl_path.exists():
+                result["stl_b64"] = _file_to_b64(stl_path)
+                result["stl_size_bytes"] = stl_path.stat().st_size
+            if tex_path.exists():
+                result["texture_png_b64"] = _file_to_b64(tex_path)
+                result["texture_png_size_bytes"] = tex_path.stat().st_size
 
             # Log tail
             if log_path.exists():
