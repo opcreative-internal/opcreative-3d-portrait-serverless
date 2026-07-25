@@ -35,11 +35,9 @@ class ModuleESSLEConfig:
     input_image: Path               # source photo for luminance
     output_ply: Path                # ASCII PLY point cloud
 
-    # Crystal cube in mm (W x D x H)
-    cube_w_mm: float = 60.0
-    cube_d_mm: float = 60.0
-    cube_h_mm: float = 80.0
-    margin_mm: float = 5.0
+    # Subject scale: figurine height in mm (uniform scale from mesh bbox height).
+    # Kent's software prefers a clean subject-only point cloud with no cube fill.
+    target_height_mm: float = 70.0
 
     # Point count target
     target_count: int = 300_000
@@ -89,7 +87,7 @@ def run_module_e_ssle(cfg: ModuleESSLEConfig) -> Path:
     print(f"  input_mesh   : {cfg.input_mesh}")
     print(f"  input_image  : {cfg.input_image}")
     print(f"  output_ply   : {cfg.output_ply}")
-    print(f"  cube (mm)    : {cfg.cube_w_mm} x {cfg.cube_d_mm} x {cfg.cube_h_mm}, margin {cfg.margin_mm}")
+    print(f"  height (mm)  : {cfg.target_height_mm} (subject-only, no cube bounds)")
     print(f"  target       : {cfg.target_count} pts, band [{cfg.accept_low},{cfg.accept_high}]")
     print(f"  candidates   : {cfg.n_candidates}")
     print(f"  r_min        : {cfg.r_min_mm} mm (floor {cfg.r_min_floor_mm})")
@@ -121,24 +119,14 @@ def run_module_e_ssle(cfg: ModuleESSLEConfig) -> Path:
     faces = np.asarray(mesh.faces, dtype=np.int64)
     print(f"      verts={len(verts):,} faces={len(faces):,}", flush=True)
 
-    # ---- 2. Rescale mesh into crystal cube (bbox-centered, uniform-scaled)
-    print("\n[2/7] Scale to crystal cube", flush=True)
+    # ---- 2. Scale subject mesh to target_height_mm (no cube fitting)
+    print("\n[2/7] Scale subject to target height", flush=True)
     bbox_min = verts.min(axis=0)
     bbox_max = verts.max(axis=0)
     bbox_size = bbox_max - bbox_min
-    usable_w = cfg.cube_w_mm - 2 * cfg.margin_mm
-    usable_d = cfg.cube_d_mm - 2 * cfg.margin_mm
-    usable_h = cfg.cube_h_mm - 2 * cfg.margin_mm
-    scale_w = usable_w / max(bbox_size[0], 1e-6)
-    scale_d = usable_d / max(bbox_size[2], 1e-6)
-    scale_h = usable_h / max(bbox_size[1], 1e-6)
-    s = min(scale_w, scale_d, scale_h)
+    s = cfg.target_height_mm / max(bbox_size[1], 1e-6)  # scale so height matches
     center_orig = (bbox_min + bbox_max) / 2.0
     verts_mm = (verts - center_orig) * s
-    # Center in cube (cube centered at origin: [-w/2, w/2] etc.)
-    verts_mm[:, 0] += 0.0  # X = 0 center
-    verts_mm[:, 1] += 0.0  # Y = 0 center
-    verts_mm[:, 2] += 0.0  # Z = 0 center
     print(f"      scale factor: {s:.4f} mm/unit  bbox_mm={(bbox_size*s).round(2)}", flush=True)
     mesh_mm = trimesh.Trimesh(vertices=verts_mm, faces=faces, process=False)
 
@@ -250,19 +238,12 @@ def run_module_e_ssle(cfg: ModuleESSLEConfig) -> Path:
         result_normals = cand_face_normals[accepted]
         print(f"      accepting {len(result_pts):,} (outside band)", flush=True)
 
-    # ---- 6. Normal jitter, cube bounds assert
-    print(f"\n[6/7] Normal jitter + bounds", flush=True)
+    # ---- 6. Normal jitter (no cube bounds -- pure subject point cloud)
+    print(f"\n[6/7] Normal jitter (subject-only, no cube filter)", flush=True)
     jitter = rng.uniform(-cfg.normal_jitter_mm, cfg.normal_jitter_mm,
                         size=(len(result_pts), 1)).astype(np.float32)
     result_pts_j = result_pts + result_normals * jitter
-    half_w = cfg.cube_w_mm / 2 - cfg.margin_mm
-    half_d = cfg.cube_d_mm / 2 - cfg.margin_mm
-    half_h = cfg.cube_h_mm / 2 - cfg.margin_mm
-    inside = ((np.abs(result_pts_j[:, 0]) <= half_w) &
-              (np.abs(result_pts_j[:, 1]) <= half_h) &
-              (np.abs(result_pts_j[:, 2]) <= half_d))
-    result_pts_j = result_pts_j[inside]
-    print(f"      after jitter+bounds: {len(result_pts_j):,}", flush=True)
+    print(f"      after jitter: {len(result_pts_j):,} points", flush=True)
 
     # NN distance sanity
     if len(result_pts_j) > 100:
