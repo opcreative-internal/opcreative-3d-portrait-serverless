@@ -40,6 +40,7 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.request
 from pathlib import Path
 
 import runpod
@@ -52,6 +53,15 @@ sys.path.insert(0, "/opt/TripoSG")
 def _b64_to_file(b64_str: str, tmp: Path, name: str) -> Path:
     p = tmp / name
     p.write_bytes(base64.b64decode(b64_str))
+    return p
+
+
+def _url_to_file(url: str, tmp: Path, name: str, timeout: int = 60) -> Path:
+    """Download URL to local file. Used to bypass /run 10MB payload limit."""
+    p = tmp / name
+    req = urllib.request.Request(url, headers={"User-Agent": "cowork-3d-v14/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        p.write_bytes(resp.read())
     return p
 
 
@@ -80,17 +90,33 @@ def handler(job: dict) -> dict:
     try:
         # ---- Validate inputs ----
         img_b64 = job_input.get("image_b64")
-        if not img_b64:
-            return {"error": "missing 'image_b64' in input"}
+        img_url = job_input.get("image_url")
+        if not img_b64 and not img_url:
+            return {"error": "missing 'image_b64' or 'image_url' in input"}
         mesh_b64 = job_input.get("mesh_b64")
+        mesh_url = job_input.get("mesh_url")
         base_b64 = job_input.get("base_mesh_b64")
+        base_url = job_input.get("base_mesh_url")
 
         # ---- Stage into a tmpdir ----
         with tempfile.TemporaryDirectory(prefix="rp_") as tmp_dir:
             tmp = Path(tmp_dir)
-            in_img = _b64_to_file(img_b64, tmp, "input.png")
-            in_mesh = _b64_to_file(mesh_b64, tmp, "input.glb") if mesh_b64 else None
-            in_base = _b64_to_file(base_b64, tmp, "base.glb") if base_b64 else None
+            if img_b64:
+                in_img = _b64_to_file(img_b64, tmp, "input.png")
+            else:
+                in_img = _url_to_file(img_url, tmp, "input.png")
+            if mesh_b64:
+                in_mesh = _b64_to_file(mesh_b64, tmp, "input.glb")
+            elif mesh_url:
+                in_mesh = _url_to_file(mesh_url, tmp, "input.glb")
+            else:
+                in_mesh = None
+            if base_b64:
+                in_base = _b64_to_file(base_b64, tmp, "base.glb")
+            elif base_url:
+                in_base = _url_to_file(base_url, tmp, "base.glb")
+            else:
+                in_base = None
             output = tmp / "output.glb"
             log_path = tmp / "run.log"
 
