@@ -101,3 +101,5 @@ jobs:
 # V21e-fix triposg /opt path 20260725-215000
 
 # V21e-log log_tail_on_error 20260725-215500
+
+# V21f Fable v3 TripoSG import chain fix 20260725-220500
