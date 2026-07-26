@@ -166,8 +166,15 @@ def run_module_a(cfg: ModuleAConfig) -> Path:
     # explicit deadline check.
     import threading
     def _drain():
+        # V21f (Fable v3): tee to sys.__stdout__ so TripoSG output survives handler's
+        # redirect_stdout context and hits the RunPod worker console for post-mortem.
         for line in proc.stdout:
             print(f"    | {line}", end="", flush=True)
+            try:
+                sys.__stdout__.write(f"TRIPOSG| {line}")
+                sys.__stdout__.flush()
+            except Exception:
+                pass
     reader = threading.Thread(target=_drain, daemon=True)
     reader.start()
     deadline = t0 + cfg.timeout_s
