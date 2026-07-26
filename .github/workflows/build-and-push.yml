@@ -105,3 +105,5 @@ jobs:
 # V21f Fable v3 TripoSG import chain fix 20260725-220500
 
 # V21f-v2 typeguard 2.13.3 (jaxtyping constraint) 20260725-223500
+
+# V21f-v3 remove grep fatal + patch pipeline_triposg 20260725-224500
