@@ -68,14 +68,22 @@ def remove_background(pil_img, gray_replace: int = 128):
         inp = tf(img).unsqueeze(0).to(device)
         with torch.no_grad():
             out = model(inp)
-        # RMBG returns a list of feature maps; the last one is the mask logits
+        # V21h.1 Fable v3 fix: BriaRMBG forward returns ([d1..d6 masks], [features]).
+        # Previous code took out[-1][0] = first FEATURE MAP shape (1,64,1024,1024) which
+        # cannot become a 2D mask (OpenCV `m->dims <= 2` assertion on 3D array).
+        # Correct: out[0][0] = d1 (finest mask, already sigmoided inside model).
         if isinstance(out, (list, tuple)):
-            mask_logits = out[-1] if not isinstance(out[-1], (list, tuple)) else out[-1][0]
+            mask_logits = out[0][0] if isinstance(out[0], (list, tuple)) else out[0]
         else:
             mask_logits = out
-        mask = torch.sigmoid(mask_logits).squeeze().cpu().numpy()
+        # d1 is already sigmoided; DO NOT double-sigmoid (that squashes to [0.5, 0.73]).
+        # Official BriaRMBG postproc is min-max normalize.
+        mask = mask_logits.squeeze().float().cpu().numpy()
         if mask.ndim > 2:
-            mask = mask.squeeze()
+            mask = mask[0] if mask.shape[0] == 1 else mask.mean(axis=0)
+        mn = float(mask.min()); mx = float(mask.max())
+        mask = (mask - mn) / (mx - mn + 1e-8)
+        mask = np.ascontiguousarray(mask, dtype=np.float32)
         # resize back to original
         import cv2
         mask_up = cv2.resize(mask, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
