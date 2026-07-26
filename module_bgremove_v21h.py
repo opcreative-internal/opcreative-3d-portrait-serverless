@@ -90,7 +90,10 @@ def remove_background(pil_img, gray_replace: int = 128):
         mask_up = np.clip(mask_up, 0.0, 1.0)[..., None]   # H,W,1
         composited = arr.astype(np.float32) * mask_up + gray_replace * (1.0 - mask_up)
         composited = np.clip(composited, 0, 255).astype(np.uint8)
-        out_img = Image.fromarray(composited)
+        # V21h.3 Fable v3: emit RGBA so wrap bake can use alpha for subject bbox mapping
+        alpha_u8 = np.clip(mask_up.squeeze() * 255.0, 0, 255).astype(np.uint8)
+        rgba = np.concatenate([composited, alpha_u8[..., None]], axis=2)
+        out_img = Image.fromarray(rgba, mode='RGBA')
         # simple diagnostics
         fg = float(mask_up.mean())
         print(f"      [bgremove] mask fg_fraction={fg:.3f} (replaced BG with gray={gray_replace})",
