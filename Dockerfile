@@ -54,6 +54,16 @@ RUN python -m pip install \
         omegaconf \
         einops
 
+# V21f4: pin diffusers/transformers/accelerate to versions compatible with torch 2.4.0.
+# The un-pinned `diffusers transformers accelerate` above resolves to latest which pull
+# APIs not yet in torch 2.4 -> "infer_schema(func): Parameter q has unsupported type
+# torch.Tensor" on diffusers autoencoder_kl import; peft 0.19+ needs DTensor from newer
+# torch. Force-downgrade to a set known to work with torch 2.4 + TripoSG.
+RUN python -m pip install --force-reinstall --no-deps \
+        transformers==4.44.2 \
+        diffusers==0.30.3 \
+        accelerate==0.34.2
+
 # TripoSG needs: peft, jaxtyping, typeguard. `diso` is a CUDA extension that requires
 # nvcc (not in this cudnn-runtime base). Per Fable v3 verdict 20260725:
 # 1. install the Python-only TripoSG deps EXPLICITLY (no silent failures)
@@ -62,8 +72,8 @@ RUN python -m pip install \
 # 3. TripoSG's own requirements.txt is skipped because `diso` in it kills the whole
 #    `pip install -r` transaction (single-shot atomic install)
 RUN python -m pip install \
-        peft \
-        jaxtyping \
+        peft==0.11.1 \
+        jaxtyping==0.2.34 \
         typeguard==2.13.3
 
 RUN git clone --depth 1 https://github.com/VAST-AI-Research/TripoSG.git /opt/TripoSG \
