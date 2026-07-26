@@ -103,3 +103,5 @@ jobs:
 # V21e-log log_tail_on_error 20260725-215500
 
 # V21f Fable v3 TripoSG import chain fix 20260725-220500
+
+# V21f-v2 typeguard 2.13.3 (jaxtyping constraint) 20260725-223500
