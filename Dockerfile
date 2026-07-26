@@ -43,7 +43,7 @@ RUN python -m pip install \
         opencv-python-headless \
         scipy==1.14.1 \
         scikit-image==0.24.0 \
-        numpy \
+        "numpy<2" \
         huggingface_hub \
         matplotlib \
         fast-simplification \
@@ -114,8 +114,12 @@ RUN git clone --depth 1 https://github.com/DepthAnything/Depth-Anything-V2 /opt/
 RUN mkdir -p /workspace /models \
     && curl -fL -o /workspace/face_landmarker.task \
         "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task" \
-    && cp /workspace/face_landmarker.task /models/face_landmarker.task
-ENV FACE_LANDMARKER_MODEL=/workspace/face_landmarker.task
+    && cp /workspace/face_landmarker.task /models/face_landmarker.task \
+    && curl -fL -o /workspace/blaze_face_short_range.tflite \
+        "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite" \
+    && cp /workspace/blaze_face_short_range.tflite /models/blaze_face_short_range.tflite
+ENV FACE_LANDMARKER_MODEL=/workspace/face_landmarker.task \
+    FACE_DETECTOR_MODEL=/workspace/blaze_face_short_range.tflite
 
 # Pre-fetch Depth-Anything-V2 base weights (~380MB) to HF cache so first job is fast.
 # Use hf_hub_download inside python to place in canonical HF_HOME layout.
