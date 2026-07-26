@@ -123,3 +123,5 @@ jobs:
 # V21h.2 Fable v3 hidden-bug: unwrap_uvs str-guard + mediapipe Tasks API + blazeface + numpy<2 20260726-122500
 
 # V21h.3 Fable v3 issues-1-2-4-5: autofront gate+prior+keylight + subject-alpha bbox + GLB 2048 preview + integrity check + BG-emit-RGBA 20260726-141000
+
+# V21h.4 Fable v3 landmark-sim fold-in: FaceLandmarker photo+skin-tinted-render, s/t fold into scale_xy+img_center, warn-skip fallback 20260726-155000
