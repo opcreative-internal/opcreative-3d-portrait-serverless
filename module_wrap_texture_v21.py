@@ -233,7 +233,8 @@ def bake_ortho_texture_v21(photo_pil, verts_world, uvs, faces_uv, vmapping,
                            atlas_res, wrap_direction="front",
                            azimuth_deg=None, elevation_deg=None,
                            clahe_clip=3.0, clahe_tile=16,
-                           front_offset_deg: float = 0.0):
+                           front_offset_deg: float = 0.0,
+                           subject_alpha=None):
     """V21h Fable v3 rewrite: true orthonormal projection + face-normal cull + z-buffer.
 
     Bug A fix: uses _view_basis_from_azel (no axis-snapping) so arbitrary az/el actually work.
@@ -276,15 +277,31 @@ def bake_ortho_texture_v21(photo_pil, verts_world, uvs, faces_uv, vmapping,
 
     world_uv = np.stack([verts_u, verts_v], axis=1).astype(np.float32)
     v_min = world_uv.min(0); v_max = world_uv.max(0)
-    v_span = float(np.max(v_max - v_min)); v_span = max(v_span, 1e-9)
     v_center = (v_min + v_max) / 2.0
-    img_center = np.array([img_w / 2.0, img_h / 2.0])
-    img_scale = min(img_w, img_h) / v_span
+    # V21h.3 Fable v3 Bug Q2 fix: map mesh bbox -> subject alpha bbox (per-axis).
+    # OLD: `min(img_w, img_h) / max(u_span, v_span)` — a 3:4 portrait mesh mapped mesh
+    # HEIGHT to img_w rows leaving big vertical padding; mesh WIDTH used only ~40% of
+    # img_w. Half the mesh triangles projected outside the frame → bbox clamped → empty
+    # `owner` → skipped by _rasterize_zbuffer_owner → flat-gray-128 fill on lower body.
+    # NEW: fit mesh projected bbox to subject-alpha bbox from BG remove. Same-subject
+    # same-view means silhouette aspect ≈ mesh aspect by construction, per-axis = registration.
+    if subject_alpha is not None and (subject_alpha > 8).any():
+        ys, xs = np.where(subject_alpha > 8)
+        sx0, sx1 = int(xs.min()), int(xs.max()) + 1
+        sy0, sy1 = int(ys.min()), int(ys.max()) + 1
+        print(f"      subject_bbox={sx0},{sy0}-{sx1},{sy1} of {img_w}x{img_h}", flush=True)
+    else:
+        sx0, sy0, sx1, sy1 = 0, 0, img_w, img_h
+        print(f"      no alpha - using full image bbox {img_w}x{img_h}", flush=True)
+    u_span = max(float(v_max[0] - v_min[0]), 1e-9)
+    vv_span = max(float(v_max[1] - v_min[1]), 1e-9)
+    scale_xy = np.array([(sx1 - sx0) / u_span, (sy1 - sy0) / vv_span], dtype=np.float32)
+    img_center = np.array([(sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0], dtype=np.float32)
 
     def w2i(pts):
         cent = pts - v_center
         cent[:, 1] *= -1.0   # flip Y (image origin top-left, world Y up)
-        return cent * img_scale + img_center
+        return cent * scale_xy + img_center
 
     tri_orig_idx = vmapping[faces_uv]                        # (N, 3) vertex indices in original mesh
     tri_world_pts = verts_np[tri_orig_idx]                    # (N, 3, 3)
@@ -428,7 +445,14 @@ def run_module_wrap_v21(cfg: ModuleWrapV21Config):
     print(f"\n[3/5] Preprocess + ortho bake dir={cfg.wrap_direction} "
           f"az={cfg.wrap_azimuth} el={cfg.wrap_elevation} "
           f"{cfg.atlas_res}x{cfg.atlas_res}", flush=True)
-    photo = Image.open(cfg.input_image).convert("RGB")
+    # V21h.3 Fable v3: load image preserving RGBA if the BG-remove stage produced alpha.
+    # Alpha bbox is what drives the mesh-to-image registration in bake_ortho_texture_v21.
+    photo_raw = Image.open(cfg.input_image)
+    subject_alpha = None
+    if photo_raw.mode == 'RGBA':
+        subject_alpha = np.array(photo_raw.split()[-1])
+        print(f"      photo has alpha, mean={subject_alpha.mean():.1f}/255", flush=True)
+    photo = photo_raw.convert("RGB")
     photo = _preprocess_image(photo, cfg.flip_h, cfg.flip_v, cfg.brightness, cfg.contrast)
     atlas_rgb, coverage = bake_ortho_texture_v21(
         photo, dec_verts, uvs, faces_uv, vmapping,
@@ -436,6 +460,7 @@ def run_module_wrap_v21(cfg: ModuleWrapV21Config):
         azimuth_deg=cfg.wrap_azimuth, elevation_deg=cfg.wrap_elevation,
         clahe_clip=cfg.clahe_clip, clahe_tile=cfg.clahe_tile,
         front_offset_deg=cfg.wrap_front_offset,
+        subject_alpha=subject_alpha,
     )
     atlas_for_gltf = atlas_rgb[::-1].copy()   # glTF UV convention
 
@@ -450,15 +475,43 @@ def run_module_wrap_v21(cfg: ModuleWrapV21Config):
     )
     geo_mesh = trimesh.Trimesh(vertices=xatlas_verts, faces=faces_uv, process=False)
 
-    # 5. Export (same set as V18)
+    # 5. Export (V21h.3 Fable v3: GLB uses 2048² preview texture to fit RunPod ≤3MB
+    # inline response cap and avoid catbox truncation "Invalid typed array length: 4".
+    # Full 8192² PNG stays with OBJ + as separate _texture.png artifact for engraving.)
     print("\n[5/5] Export OBJ + MTL + PNG + STL + GLB", flush=True)
     stem = cfg.out_stem
     obj_path = stem.with_suffix(".obj")
-    tex_mesh.export(obj_path)
+    tex_mesh.export(obj_path)   # OBJ + MTL + auto-written _material_0.png at full res
     stl_path = stem.with_suffix(".stl")
     geo_mesh.export(stl_path)
+
+    # GLB with downsampled texture — Fable v3 fix for issue #5
+    _preview_res = min(2048, cfg.atlas_res)
+    if _preview_res < cfg.atlas_res:
+        preview_img = Image.fromarray(atlas_for_gltf).resize((_preview_res, _preview_res), Image.LANCZOS)
+        print(f"      GLB preview texture: downsampled {cfg.atlas_res}²→{_preview_res}²", flush=True)
+    else:
+        preview_img = Image.fromarray(atlas_for_gltf)
+    mat_preview = SimpleMaterial(image=preview_img)
+    tex_mesh_preview = trimesh.Trimesh(
+        vertices=xatlas_verts, faces=faces_uv,
+        visual=TextureVisuals(uv=uvs, image=preview_img, material=mat_preview),
+        process=False,
+    )
     glb_path = stem.with_suffix(".glb")
-    tex_mesh.export(glb_path)
+    tex_mesh_preview.export(glb_path)
+
+    # GLB integrity check per Fable v3: header bytes 8-12 declare total length.
+    # Mismatch with actual file size means truncated write; fail loud.
+    try:
+        _raw = open(glb_path, 'rb').read()
+        _decl = int.from_bytes(_raw[8:12], 'little')
+        _actual = len(_raw)
+        print(f"      GLB integrity: declared={_decl} actual={_actual} match={_decl == _actual}", flush=True)
+        if _decl != _actual:
+            print(f"      WARN glb declared_length != file_length -> truncation. Downstream viewer will hit 'Invalid typed array length'", flush=True)
+    except Exception as _e:
+        print(f"      GLB integrity check failed: {_e}", flush=True)
 
     print(f"\n[done] V21 wrap in {time.time()-t0:.2f}s", flush=True)
     print(f"       OBJ: {obj_path}")
