@@ -54,13 +54,37 @@ RUN python -m pip install \
         omegaconf \
         einops
 
-# diso (CUDA extension — needs torch already installed)
-RUN python -m pip install --no-build-isolation diso || echo "diso install warning"
+# TripoSG needs: peft, jaxtyping, typeguard. `diso` is a CUDA extension that requires
+# nvcc (not in this cudnn-runtime base). Per Fable v3 verdict 20260725:
+# 1. install the Python-only TripoSG deps EXPLICITLY (no silent failures)
+# 2. stub diso.py so the `from diso import DiffDMC` import passes; runtime path forced
+#    to hierarchical_extract_geometry (skimage marching cubes) — 10-20s slower, no diso
+# 3. TripoSG's own requirements.txt is skipped because `diso` in it kills the whole
+#    `pip install -r` transaction (single-shot atomic install)
+RUN python -m pip install \
+        peft==0.11.1 \
+        jaxtyping==0.2.34 \
+        typeguard==4.3.0
 
-# TripoSG repo (code only — weights fetched at runtime)
 RUN git clone --depth 1 https://github.com/VAST-AI-Research/TripoSG.git /opt/TripoSG \
-    && rm -rf /opt/TripoSG/.git \
-    && python -m pip install -r /opt/TripoSG/requirements.txt || echo "TripoSG reqs partial"
+    && rm -rf /opt/TripoSG/.git
+# Stub diso — /opt/TripoSG is on PYTHONPATH so this shim resolves first.
+RUN printf 'class DiffDMC:\n    def __init__(self, *a, **kw): raise RuntimeError("diso stub reached at runtime; force use_flash_decoder=False")\n' > /opt/TripoSG/diso.py \
+    && sed -i 's/use_flash_decoder\s*=\s*True/use_flash_decoder=False/g' /opt/TripoSG/scripts/inference_triposg.py \
+    && grep -c 'use_flash_decoder=False' /opt/TripoSG/scripts/inference_triposg.py
+
+# Bake TripoSG + RMBG weights into the exact local_dirs the CLI reads from.
+# `scripts/inference_triposg.py` uses snapshot_download(local_dir='pretrained_weights/...')
+# relative to cwd=/opt/TripoSG, so weights MUST live at these paths (HF cache won't be found).
+RUN python -c "\
+from huggingface_hub import snapshot_download; \
+snapshot_download(repo_id='VAST-AI/TripoSG', local_dir='/opt/TripoSG/pretrained_weights/TripoSG'); \
+print('TripoSG weights baked at /opt/TripoSG/pretrained_weights/TripoSG')"
+
+RUN python -c "\
+from huggingface_hub import snapshot_download; \
+snapshot_download(repo_id='briaai/RMBG-1.4', local_dir='/opt/TripoSG/pretrained_weights/RMBG-1.4'); \
+print('RMBG weights baked at /opt/TripoSG/pretrained_weights/RMBG-1.4')"
 
 # Depth-Anything-V2 code (imports `depth_anything_v2.dpt.DepthAnythingV2`)
 # PYTHONPATH env above adds /opt/DAv2 to sys.path -- proper mechanism (site-packages
