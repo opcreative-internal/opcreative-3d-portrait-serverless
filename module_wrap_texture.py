@@ -73,11 +73,27 @@ def unwrap_uvs(mesh, target_faces, timeout_s):
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
     p = ctx.Process(target=_xatlas_worker, args=(dec_verts, dec_faces, q))
-    p.start(); p.join(timeout_s)
+    p.start()
+    # V21h.1 Fable v3 fix: DRAIN queue BEFORE joining. The old
+    # `p.join(180); q.get_nowait()` pattern was a classic mp.Queue deadlock —
+    # child.put()s a multi-MB result, feeder thread blocks flushing >64KB into
+    # the pipe nobody is reading, child never exits, join always times out at
+    # 180s. Result: xatlas has NEVER successfully returned here; every render
+    # silently fell back to pymeshlab trivial-per-wedge (per-triangle fragmented
+    # UV = renders visually identical regardless of bake pixels). Kent's
+    # "T1 == T2" bug traced to this.
+    try:
+        result = q.get(timeout=timeout_s)
+    except Exception:
+        try:
+            if p.is_alive():
+                p.terminate()
+        finally:
+            p.join(5)
+        raise TimeoutError(f"xatlas > {timeout_s}s (queue drain)")
+    p.join(10)
     if p.is_alive():
-        p.terminate(); p.join()
-        raise TimeoutError(f"xatlas > {timeout_s}s")
-    result = q.get_nowait()
+        p.terminate(); p.join(5)
     if isinstance(result, tuple) and result and result[0] == "ERROR":
         raise RuntimeError(f"xatlas: {result[1]}")
     uvs, indices, vmapping = result
