@@ -25,9 +25,17 @@ from typing import Optional
 @dataclass
 class PipelineV21Config:
     input_image: Path
-    input_mesh: Path
     output: Path
+    input_mesh: Optional[Path] = None       # if None, run TripoSG (module_a) to generate
     workdir: Path = Path("/workspace")
+
+    # V21e: auto-run TripoSG when no mesh provided (customer photo-only flow)
+    run_module_a: bool = False              # auto-enabled when input_mesh is None
+    a_num_inference_steps: int = 50         # tuned for speed (~30s vs 75 steps ~60s)
+    a_guidance_scale: float = 7.0
+    a_faces: int = 200_000
+    a_seed: int = 42
+    a_timeout_s: int = 300
 
     run_module_cd: bool = True
     run_module_e_ssle: bool = True
@@ -87,9 +95,27 @@ def run_pipeline_v21(cfg: PipelineV21Config) -> Path:
     if cfg.dry_run: return cfg.output
 
     t_all = time.time()
-    if not Path(cfg.input_mesh).exists():
-        raise FileNotFoundError(f"input_mesh missing: {cfg.input_mesh}")
-    current_mesh = Path(cfg.input_mesh)
+
+    # V21e: auto-run TripoSG (module_a) when no input_mesh supplied (customer photo-only)
+    if cfg.input_mesh is None or (cfg.input_mesh and not Path(cfg.input_mesh).exists()):
+        cfg.run_module_a = True
+
+    if cfg.run_module_a:
+        print("\n>>>>> STAGE A (TripoSG image-to-mesh, auto-triggered) <<<<<", flush=True)
+        from module_a_retune import ModuleAConfig, run_module_a
+        a_out = cfg.output.parent / f"{cfg.output.stem}_stageA.glb"
+        a_cfg = ModuleAConfig(
+            input_image=cfg.input_image, output_mesh=a_out,
+            num_inference_steps=cfg.a_num_inference_steps,
+            guidance_scale=cfg.a_guidance_scale,
+            faces=cfg.a_faces, seed=cfg.a_seed,
+        )
+        current_mesh = run_module_a(a_cfg)
+        print(f"  TripoSG mesh: {current_mesh}", flush=True)
+    else:
+        if not Path(cfg.input_mesh).exists():
+            raise FileNotFoundError(f"input_mesh missing: {cfg.input_mesh}")
+        current_mesh = Path(cfg.input_mesh)
 
     # C+D face relief
     if cfg.run_module_cd:
