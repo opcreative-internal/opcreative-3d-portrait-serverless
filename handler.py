@@ -322,6 +322,9 @@ def handler(job: dict) -> dict:
                         seed=int(job_input.get("seed", 42)),
                         # V21 explicit user-facing controls (Fable v3: kill auto-detect)
                         wrap_direction=str(job_input.get("wrap_direction", "front")),
+                        # V21c free rotation (overrides wrap_direction when set)
+                        wrap_azimuth=(float(job_input["wrap_azimuth"]) if "wrap_azimuth" in job_input and job_input["wrap_azimuth"] is not None else None),
+                        wrap_elevation=(float(job_input["wrap_elevation"]) if "wrap_elevation" in job_input and job_input["wrap_elevation"] is not None else None),
                         flip_h=bool(job_input.get("flip_h", False)),
                         flip_v=bool(job_input.get("flip_v", False)),
                         brightness=float(job_input.get("brightness", 0.0)),
