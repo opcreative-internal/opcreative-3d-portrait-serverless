@@ -568,10 +568,21 @@ def handler(job: dict) -> dict:
                 if info.get("hoster"):
                     result[f"{name}_hoster"] = info["hoster"]
 
+            # V21h Fable v3 mesh-cache: upload stageA GLB (pre-C+D, pre-wrap TripoSG output)
+            # so client can pass it back as mesh_url on subsequent Re-render requests to skip
+            # the 5-8 min TripoSG stage. Only present when pipeline_v21 auto-ran module_a.
+            stageA_path = output.parent / f"{output.stem}_stageA.glb"
+            if stageA_path.exists():
+                info = _up(stageA_path)
+                if info:
+                    if "url" in info: result["mesh_stageA_url"] = info["url"]
+                    result["mesh_stageA_size_bytes"] = info["size_bytes"]
+                    if info.get("hoster"): result["mesh_stageA_hoster"] = info["hoster"]
+
             # Log tail
             if log_path.exists():
                 lines = log_path.read_text(errors="replace").splitlines()
-                result["log_tail"] = "\n".join(lines[-40:])
+                result["log_tail"] = "\n".join(lines[-300:])   # V21h.1 Fable v3: bump 40→300 so AUTO-FRONT + BG-REMOVE stage headers survive
 
             # Upload attempt diagnostics (V18c: catbox reachability from RunPod worker)
             if _UPLOAD_LOG:
