@@ -54,6 +54,10 @@ class ModuleWrapV21Config:
     # If wrap_azimuth or wrap_elevation set (not None), overrides wrap_direction.
     wrap_azimuth: Optional[float] = None    # 0..360 degrees; 0=front(+Z), 90=right(+X), 180=back, 270=left
     wrap_elevation: Optional[float] = None  # -90..90 degrees; 0=equator (default)
+    # V21h Fable v3 Bug C: azimuth offset injected by auto-front detector (defaults 0).
+    # The pipeline runs 8-azimuth face-detect on the raw TripoSG mesh and this offset
+    # rotates user-space azimuth so preset "front"=0 lands on the mesh's true face.
+    wrap_front_offset: float = 0.0
     flip_h: bool = False
     flip_v: bool = False
     brightness: float = 0.0         # -100..100
@@ -110,24 +114,99 @@ def _view_dir_from_azel(azimuth_deg: float, elevation_deg: float):
     return (-cx, -cy, -cz)  # view direction (subject-facing)
 
 
+def _view_basis_from_azel(azimuth_deg: float, elevation_deg: float):
+    """V21h Fable v3 Bug A fix: TRUE orthonormal basis from azimuth/elevation.
+    NO axis-snapping. Slider 0-360 produces genuinely arbitrary projection planes.
+
+    Returns (u_vec, v_vec, w_vec) as 3-tuples where:
+      - w_vec = unit vector pointing FROM subject TOWARD camera (== -view_dir)
+      - u_vec = image "right" in world space (perpendicular to w and world-up)
+      - v_vec = image "up" in world space (perpendicular to w and u)
+
+    Convention matches _view_dir_from_azel: az=0 -> cam at +Z, az=90 -> cam at +X.
+    """
+    import math
+    import numpy as np
+    theta = math.radians(elevation_deg)
+    phi = math.radians(azimuth_deg)
+    # camera position on unit sphere
+    cx = math.sin(phi) * math.cos(theta)
+    cy = math.sin(theta)
+    cz = math.cos(phi) * math.cos(theta)
+    w = np.array([cx, cy, cz], dtype=np.float32)      # subject -> camera
+    # world up = +Y (image height axis). Handle pole degenerate: use +Z if too close to up.
+    up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    if abs(float(np.dot(w, up))) > 0.995:
+        up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    # image right = normalize(up x w). For az=0 el=0 gives right=+X.
+    right = np.cross(up, w)
+    right /= (np.linalg.norm(right) + 1e-9)
+    # image up = normalize(w x right). Guaranteed orthonormal.
+    true_up = np.cross(w, right)
+    true_up /= (np.linalg.norm(true_up) + 1e-9)
+    return right, true_up, w
+
+
 def _dir_axes_from_view(view_dir):
-    """Return (u_axis_idx, v_axis_idx, u_sign, v_sign, proj_axis_idx, proj_sign)
-    equivalent to _axes_for_direction but for arbitrary view direction.
-    Picks dominant axis of view_dir as projection axis; the other two form UV plane.
+    """V21h DEPRECATED: axis-snap projection (Fable v3 Bug A). Kept for backward
+    compat; new code path uses _view_basis_from_azel + project_verts_basis.
     """
     import math
     dx, dy, dz = view_dir
     ax = abs(dx); ay = abs(dy); az = abs(dz)
-    # Projection axis = dominant component
     if az >= ax and az >= ay:
-        # Z-dominant: u=X, v=Y, proj=Z
         return 0, 1, 1.0 if dz < 0 else -1.0, 1.0, 2, 1.0 if dz > 0 else -1.0
     elif ax >= ay:
-        # X-dominant: u=Z, v=Y, proj=X
         return 2, 1, 1.0 if dx > 0 else -1.0, 1.0, 0, 1.0 if dx > 0 else -1.0
     else:
-        # Y-dominant (top/bottom view): u=X, v=Z, proj=Y
         return 0, 2, 1.0, 1.0 if dy > 0 else -1.0, 1, 1.0 if dy > 0 else -1.0
+
+
+def _rasterize_zbuffer_owner(tri_img_pts, tri_depths, img_h, img_w, front_mask):
+    """V21h Fable v3 Bug B fix: per-pixel z-buffer + owner map.
+
+    For each image pixel, records which front-facing triangle is NEAREST to camera.
+    Later during bake, atlas triangle i only samples image pixels where owner == i,
+    so occluded surfaces do NOT receive occluder's texture (fixes projection bleed).
+
+    tri_img_pts: (N, 3, 2)   -- image-space triangle vertices
+    tri_depths:  (N, 3)      -- world-space depth per vertex (higher = closer to camera)
+    front_mask:  (N,) bool
+    Returns owner (H, W) int32, -1 = background.
+    """
+    import numpy as np
+    depth_buf = np.full((img_h, img_w), -np.inf, dtype=np.float32)
+    owner = np.full((img_h, img_w), -1, dtype=np.int32)
+    N = len(tri_img_pts)
+    for i in range(N):
+        if not front_mask[i]:
+            continue
+        pts = tri_img_pts[i]
+        d0, d1, d2 = tri_depths[i]
+        x0 = int(np.floor(pts[:, 0].min()))
+        y0 = int(np.floor(pts[:, 1].min()))
+        x1 = int(np.ceil(pts[:, 0].max())) + 1
+        y1 = int(np.ceil(pts[:, 1].max())) + 1
+        x0 = max(x0, 0); y0 = max(y0, 0)
+        x1 = min(x1, img_w); y1 = min(y1, img_h)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        v0 = pts[0]; e1 = pts[1] - v0; e2 = pts[2] - v0
+        denom = e1[0] * e2[1] - e1[1] * e2[0]
+        if abs(denom) < 1e-6:
+            continue
+        ys, xs = np.mgrid[y0:y1, x0:x1]
+        px = xs - v0[0]; py = ys - v0[1]
+        b1 = (px * e2[1] - py * e2[0]) / denom
+        b2 = (e1[0] * py - e1[1] * px) / denom
+        b0 = 1.0 - b1 - b2
+        inside = (b0 >= 0.0) & (b1 >= 0.0) & (b2 >= 0.0)
+        z = b0 * d0 + b1 * d1 + b2 * d2
+        # nearest wins (higher depth == closer to camera in our convention)
+        win = inside & (z > depth_buf[y0:y1, x0:x1])
+        depth_buf[y0:y1, x0:x1] = np.where(win, z, depth_buf[y0:y1, x0:x1])
+        owner[y0:y1, x0:x1] = np.where(win, i, owner[y0:y1, x0:x1])
+    return owner
 
 
 def _axes_for_direction(direction: str):
@@ -153,12 +232,18 @@ def _axes_for_direction(direction: str):
 def bake_ortho_texture_v21(photo_pil, verts_world, uvs, faces_uv, vmapping,
                            atlas_res, wrap_direction="front",
                            azimuth_deg=None, elevation_deg=None,
-                           clahe_clip=3.0, clahe_tile=16):
-    """V21c ortho bake with explicit direction OR free azimuth/elevation.
+                           clahe_clip=3.0, clahe_tile=16,
+                           front_offset_deg: float = 0.0):
+    """V21h Fable v3 rewrite: true orthonormal projection + face-normal cull + z-buffer.
 
-    If azimuth_deg or elevation_deg given (not None), uses view-dir math for
-    arbitrary 360-degree rotation. Otherwise falls back to wrap_direction enum.
+    Bug A fix: uses _view_basis_from_azel (no axis-snapping) so arbitrary az/el actually work.
+    Bug B fix: face-normal culling AND per-pixel z-buffer -> no projection bleed.
+    Bug C support: front_offset_deg lets caller inject auto-detected front azimuth.
+
+    All callers now go through the (az, el) path — wrap_direction enum is converted to
+    the equivalent azimuth internally.
     """
+    import math
     import numpy as np
     from PIL import Image
     import cv2
@@ -171,19 +256,25 @@ def bake_ortho_texture_v21(photo_pil, verts_world, uvs, faces_uv, vmapping,
     gray_eq = clahe.apply(gray)
     photo_gray_rgb = cv2.cvtColor(gray_eq, cv2.COLOR_GRAY2RGB)
 
-    if azimuth_deg is not None or elevation_deg is not None:
-        view_dir = _view_dir_from_azel(azimuth_deg or 0.0, elevation_deg or 0.0)
-        u_i, v_i, u_s, v_s, p_i, p_s = _dir_axes_from_view(view_dir)
-        print(f"      V21c free rotation: az={azimuth_deg} el={elevation_deg} view_dir={tuple(round(v,3) for v in view_dir)}",
-              flush=True)
-    else:
-        u_i, v_i, u_s, v_s, p_i, p_s = _axes_for_direction(wrap_direction)
+    # Convert preset enum to azimuth if user did not supply az/el
+    if azimuth_deg is None and elevation_deg is None:
+        preset_az = {"front": 0.0, "back": 180.0, "left": 270.0, "right": 90.0}
+        azimuth_deg = preset_az.get(wrap_direction, 0.0)
+        elevation_deg = 0.0
+    az = float(azimuth_deg or 0.0) + float(front_offset_deg)
+    el = float(elevation_deg or 0.0)
+    u_vec, v_vec, w_vec = _view_basis_from_azel(az, el)
+    print(f"      V21h bake az={az:.1f} el={el:.1f} (front_offset={front_offset_deg:.1f}) "
+          f"u={u_vec.round(3).tolist()} v={v_vec.round(3).tolist()} w={w_vec.round(3).tolist()}",
+          flush=True)
 
-    # world_xy analogue for chosen direction
-    world_uv = np.stack([verts_world[:, u_i] * u_s,
-                          verts_world[:, v_i] * v_s], axis=1).astype(np.float32)
-    proj_axis = (verts_world[:, p_i] * p_s).astype(np.float32)
+    # Project verts onto (u, v) plane; depth along +w (higher = closer to camera).
+    verts_np = np.asarray(verts_world, dtype=np.float32)
+    verts_u = verts_np @ u_vec
+    verts_v = verts_np @ v_vec
+    verts_d = verts_np @ w_vec  # depth (subject -> camera direction)
 
+    world_uv = np.stack([verts_u, verts_v], axis=1).astype(np.float32)
     v_min = world_uv.min(0); v_max = world_uv.max(0)
     v_span = float(np.max(v_max - v_min)); v_span = max(v_span, 1e-9)
     v_center = (v_min + v_max) / 2.0
@@ -192,45 +283,72 @@ def bake_ortho_texture_v21(photo_pil, verts_world, uvs, faces_uv, vmapping,
 
     def w2i(pts):
         cent = pts - v_center
-        cent[:, 1] *= -1.0
+        cent[:, 1] *= -1.0   # flip Y (image origin top-left, world Y up)
         return cent * img_scale + img_center
+
+    tri_orig_idx = vmapping[faces_uv]                        # (N, 3) vertex indices in original mesh
+    tri_world_pts = verts_np[tri_orig_idx]                    # (N, 3, 3)
+    tri_img_pts = w2i(world_uv[tri_orig_idx.reshape(-1)]).reshape(-1, 3, 2)
+    tri_depths = verts_d[tri_orig_idx]                        # (N, 3)
+    atlas_pts_all = (uvs[faces_uv] * atlas_res).astype(np.float32)
+
+    # BUG B FIX #1: face-normal culling.
+    # Face normal = normalize((v1-v0) x (v2-v0)); front-facing if normal points somewhat toward camera.
+    v0 = tri_world_pts[:, 0]; v1 = tri_world_pts[:, 1]; v2 = tri_world_pts[:, 2]
+    face_norm = np.cross(v1 - v0, v2 - v0)
+    face_norm /= (np.linalg.norm(face_norm, axis=1, keepdims=True) + 1e-9)
+    # dot with w_vec (subject -> camera) > 0 means normal faces the camera.
+    # Threshold 0.05 skips grazing triangles that would streak.
+    facing = face_norm @ w_vec
+    front_mask = facing > 0.05
+
+    # BUG B FIX #2: per-pixel z-buffer to resolve occlusion.
+    print(f"      V21h building z-buffer ({int(front_mask.sum())} front-facing tris)", flush=True)
+    owner = _rasterize_zbuffer_owner(tri_img_pts, tri_depths, img_h, img_w, front_mask)
 
     atlas = np.full((atlas_res, atlas_res, 3), 128, dtype=np.uint8)
     coverage = np.zeros((atlas_res, atlas_res), dtype=np.uint8)
 
-    tri_orig_idx = vmapping[faces_uv]
-    img_pts_all = w2i(world_uv[tri_orig_idx.reshape(-1)]).reshape(-1, 3, 2)
-    atlas_pts_all = (uvs[faces_uv] * atlas_res).astype(np.float32)
-
-    # front-facing selection using proj_axis
-    tri_proj = proj_axis[tri_orig_idx].reshape(-1, 3).mean(axis=1)
-    front_mask = tri_proj > 0.0    # >0 == facing camera (proj_axis already signed)
-
     n_baked = 0
+    n_occluded_skip = 0
     for i in range(len(faces_uv)):
-        if not front_mask[i]: continue
-        img_tri = img_pts_all[i]; atlas_tri = atlas_pts_all[i]
+        if not front_mask[i]:
+            continue
+        img_tri = tri_img_pts[i]; atlas_tri = atlas_pts_all[i]
         x0 = max(int(np.floor(atlas_tri[:, 0].min())) - 1, 0)
         y0 = max(int(np.floor(atlas_tri[:, 1].min())) - 1, 0)
         x1 = min(int(np.ceil(atlas_tri[:, 0].max())) + 1, atlas_res)
         y1 = min(int(np.ceil(atlas_tri[:, 1].max())) + 1, atlas_res)
         w, h = x1 - x0, y1 - y0
-        if w <= 0 or h <= 0: continue
+        if w <= 0 or h <= 0:
+            continue
         local_tri = atlas_tri - np.array([x0, y0], dtype=np.float32)
         try:
             M = cv2.getAffineTransform(img_tri.astype(np.float32), local_tri)
             warp = cv2.warpAffine(photo_gray_rgb, M, (w, h))
+            # Per-pixel visibility mask: build owner-remapped mask by warping
+            # a binary "this tri owns" image from source (owner==i) into local atlas frame.
+            src_own = (owner == i).astype(np.uint8) * 255
+            own_warp = cv2.warpAffine(src_own, M, (w, h), flags=cv2.INTER_NEAREST)
         except cv2.error:
             continue
         mask = np.zeros((h, w), dtype=np.uint8)
         cv2.fillConvexPoly(mask, local_tri.astype(np.int32), 255)
+        # AND with per-pixel visibility mask (only pixels this tri owns in source image)
+        effective_mask = np.logical_and(mask > 0, own_warp > 128)
+        pixels_visible = int(effective_mask.sum())
+        pixels_atlas = int((mask > 0).sum())
+        if pixels_visible == 0 and pixels_atlas > 0:
+            n_occluded_skip += 1
+            continue
         roi = atlas[y0:y1, x0:x1]
-        roi[mask > 0] = warp[mask > 0]
-        coverage[y0:y1, x0:x1] |= mask
+        roi[effective_mask] = warp[effective_mask]
+        coverage[y0:y1, x0:x1] |= effective_mask.astype(np.uint8) * 255
         n_baked += 1
 
-    print(f"      V21 dir={wrap_direction} baked {n_baked}/{len(faces_uv)} tris "
-          f"(skipped {int((~front_mask).sum())} back-facing)", flush=True)
+    n_backface = int((~front_mask).sum())
+    print(f"      V21h baked {n_baked}/{len(faces_uv)} tris "
+          f"(back-face={n_backface} occluded-skip={n_occluded_skip})", flush=True)
     return atlas, coverage
 
 
@@ -317,6 +435,7 @@ def run_module_wrap_v21(cfg: ModuleWrapV21Config):
         cfg.atlas_res, wrap_direction=cfg.wrap_direction,
         azimuth_deg=cfg.wrap_azimuth, elevation_deg=cfg.wrap_elevation,
         clahe_clip=cfg.clahe_clip, clahe_tile=cfg.clahe_tile,
+        front_offset_deg=cfg.wrap_front_offset,
     )
     atlas_for_gltf = atlas_rgb[::-1].copy()   # glTF UV convention
 
