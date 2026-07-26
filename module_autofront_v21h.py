@@ -103,27 +103,44 @@ def _render_gray(verts: np.ndarray, faces: np.ndarray, az: float, el: float,
 
 
 def _mediapipe_face_confidence(img_rgb: np.ndarray) -> float:
-    """Run MediaPipe FaceDetector on RGB image. Returns highest detection score, or 0."""
+    """V21h.2 Fable v3: rewrite to MediaPipe Tasks API.
+
+    Legacy `mp.solutions.face_detection` was removed / broken in this container's
+    mediapipe build. Tasks API uses BlazeFace short-range model (pre-baked into
+    the image at /workspace/blaze_face_short_range.tflite via Dockerfile curl).
+    Short-range fits full-frame face renders (the previous model_selection=1 was
+    long-range and wrong).
+
+    Returns highest detection score in [0, 1], or 0.0 if no faces or error.
+    """
     try:
+        import os
         import mediapipe as mp
+        from mediapipe.tasks.python import BaseOptions, vision
     except Exception as e:
         print(f"      [autofront] mediapipe unavailable: {e}", flush=True)
         return 0.0
-    # Use short-range model_selection=0 for close-up portraits (mesh render is full-frame face)
     try:
-        with mp.solutions.face_detection.FaceDetection(
-            model_selection=1, min_detection_confidence=0.05
-        ) as det:
-            res = det.process(img_rgb)
+        model_path = os.environ.get(
+            "FACE_DETECTOR_MODEL", "/workspace/blaze_face_short_range.tflite"
+        )
+        opts = vision.FaceDetectorOptions(
+            base_options=BaseOptions(model_asset_path=model_path),
+            min_detection_confidence=0.05,
+        )
+        with vision.FaceDetector.create_from_options(opts) as det:
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB,
+                              data=np.ascontiguousarray(img_rgb))
+            res = det.detect(mp_img)
             if not res.detections:
                 return 0.0
             scores = []
             for d in res.detections:
-                s = float(d.score[0]) if hasattr(d, 'score') and len(d.score) > 0 else 0.0
-                scores.append(s)
+                if hasattr(d, 'categories') and len(d.categories) > 0:
+                    scores.append(float(d.categories[0].score))
             return max(scores) if scores else 0.0
     except Exception as e:
-        print(f"      [autofront] mediapipe detect error: {e}", flush=True)
+        print(f"      [autofront] mediapipe Tasks detect error: {e}", flush=True)
         return 0.0
 
 
@@ -170,8 +187,10 @@ def auto_detect_front_azimuth(mesh_path: Path,
     best_i = int(np.argmax(scores))
     best_score = scores[best_i]
     best_az = az_list[best_i]
-    if best_score < 0.10:
-        print(f"      [autofront] WARN best_score={best_score:.3f} < 0.10 -> "
+    # V21h.2 Fable v3: gate dropped 0.10 → 0.05 since BlazeFace scores lower on
+    # synthetic Lambert renders than on photos. If everything still <0.05, fall to 0°.
+    if best_score < 0.05:
+        print(f"      [autofront] WARN best_score={best_score:.3f} < 0.05 -> "
               f"detection unreliable, using 0° default", flush=True)
         return 0.0
     print(f"      [autofront] BEST az={best_az:.1f}° score={best_score:.3f}", flush=True)
