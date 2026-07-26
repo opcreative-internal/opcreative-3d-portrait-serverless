@@ -162,6 +162,126 @@ def _dir_axes_from_view(view_dir):
         return 0, 2, 1.0, 1.0 if dy > 0 else -1.0, 1, 1.0 if dy > 0 else -1.0
 
 
+def _detect_face_landmarks_5pt(img_rgb):
+    """V21h.4 Fable v3: MediaPipe FaceLandmarker (478-set) on RGB image.
+    Returns np.float32 (5, 2) array of (x, y) pixel coords for
+    [eye_outer_L, eye_outer_R, nose_tip, mouth_L, mouth_R], or None on fail.
+
+    Uses the 478-landmark model (`face_landmarker.task` pre-baked at /workspace).
+    Head-crop is applied when a face is detected in the top ~50% of the image so
+    the detector gets the face at higher effective resolution.
+    """
+    import os
+    try:
+        import mediapipe as mp
+        from mediapipe.tasks.python import BaseOptions, vision
+    except Exception as e:
+        print(f"      [align] mediapipe import fail: {e}", flush=True)
+        return None
+    model_path = os.environ.get(
+        "FACE_LANDMARKER_MODEL", "/workspace/face_landmarker.task"
+    )
+    try:
+        opts = vision.FaceLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=model_path),
+            num_faces=1,
+            min_face_detection_confidence=0.3,
+            min_face_presence_confidence=0.3,
+        )
+        with vision.FaceLandmarker.create_from_options(opts) as lm:
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB,
+                              data=np.ascontiguousarray(img_rgb))
+            res = lm.detect(mp_img)
+            if not res.face_landmarks:
+                return None
+            face = res.face_landmarks[0]
+            h, w = img_rgb.shape[:2]
+            # 478-set indices per MediaPipe FaceLandmarker canonical mesh:
+            # 33=left eye outer, 263=right eye outer, 1=nose tip, 61=mouth left, 291=mouth right
+            idx = [33, 263, 1, 61, 291]
+            pts = np.array([[face[i].x * w, face[i].y * h] for i in idx], dtype=np.float32)
+            return pts
+    except Exception as e:
+        print(f"      [align] FaceLandmarker error: {e}", flush=True)
+        return None
+
+
+def _render_mesh_gray_for_align(verts, faces, u_vec, v_vec, w_vec,
+                                v_min, v_max, img_h=384, img_w=384):
+    """V21h.4: render a skin-tinted Lambert image of the mesh using the SAME
+    projection basis as the bake (no fresh recomputation of extents/scale, so
+    landmark px in this image map back through render inverse -> mesh_uv -> bake
+    photo_px unambiguously). Returns (img_rgb_uint8, render_scale, render_center, v_center).
+    """
+    verts_np = np.asarray(verts, dtype=np.float32)
+    faces_np = np.asarray(faces, dtype=np.int32)
+    verts_u = verts_np @ u_vec
+    verts_v = verts_np @ v_vec
+    verts_d = verts_np @ w_vec
+    v_center = (v_min + v_max) / 2.0
+    # Render at 90% of viewport to add padding
+    u_span = max(float(v_max[0] - v_min[0]), 1e-9)
+    vv_span = max(float(v_max[1] - v_min[1]), 1e-9)
+    span = max(u_span, vv_span)
+    render_scale = 0.90 * min(img_h, img_w) / span
+    render_center = np.array([img_w / 2.0, img_h / 2.0], dtype=np.float32)
+
+    def w2r(pts_uv):
+        cent = pts_uv - v_center
+        cent[:, 1] *= -1.0
+        return cent * render_scale + render_center
+
+    world_uv = np.stack([verts_u, verts_v], axis=1).astype(np.float32)
+    tri_pts_uv = world_uv[faces_np]
+    tri_x = np.empty((len(faces_np), 3), dtype=np.float32)
+    tri_y = np.empty((len(faces_np), 3), dtype=np.float32)
+    tri_d = verts_d[faces_np]
+    for k in range(3):
+        pxy = w2r(tri_pts_uv[:, k, :].copy())
+        tri_x[:, k] = pxy[:, 0]; tri_y[:, k] = pxy[:, 1]
+
+    # face normals + offset key light (matches autofront _render_gray)
+    v0 = verts_np[faces_np[:, 0]]; v1 = verts_np[faces_np[:, 1]]; v2 = verts_np[faces_np[:, 2]]
+    face_norm = np.cross(v1 - v0, v2 - v0)
+    face_norm /= (np.linalg.norm(face_norm, axis=1, keepdims=True) + 1e-9)
+    light = w_vec + 0.5 * u_vec + 0.6 * v_vec
+    light /= (np.linalg.norm(light) + 1e-9)
+    lam = np.maximum(0.0, face_norm @ light)
+    shade = np.clip(40 + 180.0 * lam, 0, 255).astype(np.uint8)
+    front_mask = (face_norm @ w_vec) > 0.02
+
+    depth = np.full((img_h, img_w), -np.inf, dtype=np.float32)
+    gray = np.zeros((img_h, img_w), dtype=np.uint8)
+    N = len(faces_np)
+    for i in range(N):
+        if not front_mask[i]: continue
+        px = tri_x[i]; py = tri_y[i]; pd = tri_d[i]
+        x0 = int(np.floor(px.min())); y0 = int(np.floor(py.min()))
+        x1 = int(np.ceil(px.max())) + 1; y1 = int(np.ceil(py.max())) + 1
+        x0 = max(x0, 0); y0 = max(y0, 0); x1 = min(x1, img_w); y1 = min(y1, img_h)
+        if x1 <= x0 or y1 <= y0: continue
+        e1x = px[1] - px[0]; e1y = py[1] - py[0]
+        e2x = px[2] - px[0]; e2y = py[2] - py[0]
+        denom = e1x * e2y - e1y * e2x
+        if abs(denom) < 1e-6: continue
+        ys, xs = np.mgrid[y0:y1, x0:x1]
+        dx = xs - px[0]; dy = ys - py[0]
+        b1 = (dx * e2y - dy * e2x) / denom
+        b2 = (e1x * dy - e1y * dx) / denom
+        b0 = 1.0 - b1 - b2
+        inside = (b0 >= 0) & (b1 >= 0) & (b2 >= 0)
+        z = b0 * pd[0] + b1 * pd[1] + b2 * pd[2]
+        win = inside & (z > depth[y0:y1, x0:x1])
+        gray[y0:y1, x0:x1] = np.where(win, int(shade[i]), gray[y0:y1, x0:x1])
+        depth[y0:y1, x0:x1] = np.where(win, z, depth[y0:y1, x0:x1])
+
+    # Skin tint per Fable v3: FaceLandmarker was trained on skin-toned photos, gray render
+    # scores poorly. Tint on channel means R*1.0, G*0.86, B*0.74.
+    rgb = np.stack([gray * 1.0, gray * 0.86, gray * 0.74], axis=2)
+    rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+    return rgb, float(render_scale), render_center.astype(np.float32), v_center.astype(np.float32)
+
+
 def _rasterize_zbuffer_owner(tri_img_pts, tri_depths, img_h, img_w, front_mask):
     """V21h Fable v3 Bug B fix: per-pixel z-buffer + owner map.
 
@@ -234,7 +354,15 @@ def bake_ortho_texture_v21(photo_pil, verts_world, uvs, faces_uv, vmapping,
                            azimuth_deg=None, elevation_deg=None,
                            clahe_clip=3.0, clahe_tile=16,
                            front_offset_deg: float = 0.0,
-                           subject_alpha=None):
+                           subject_alpha=None,
+                           dec_faces=None):
+    """V21h.4 Fable v3: landmark-similarity fold-in for face detail alignment.
+
+    NEW `dec_faces` param (optional): the decimated mesh faces used to render a
+    skin-tinted preview for landmark detection. Only used if MediaPipe
+    FaceLandmarker fires on both photo AND render — otherwise falls back to
+    the V21h.3 subject-alpha-bbox mapping (no regression).
+    """
     """V21h Fable v3 rewrite: true orthonormal projection + face-normal cull + z-buffer.
 
     Bug A fix: uses _view_basis_from_azel (no axis-snapping) so arbitrary az/el actually work.
@@ -302,6 +430,76 @@ def bake_ortho_texture_v21(photo_pil, verts_world, uvs, faces_uv, vmapping,
         cent = pts - v_center
         cent[:, 1] *= -1.0   # flip Y (image origin top-left, world Y up)
         return cent * scale_xy + img_center
+
+    # ============================================================
+    # V21h.4 Fable v3: landmark-similarity fold-in.
+    # Detect 5 face landmarks on photo AND on skin-tinted mesh render.
+    # Compute rigid similarity s, t on the shared coord frame -> fold into
+    # scale_xy + img_center so photo_center + eye distance land on the mesh's
+    # face landmarks. Warn+skip fallback on any of: no MediaPipe, no face on
+    # photo, no face on render, sign mirror mismatch, sanity gate rejected.
+    # ============================================================
+    align_status = 'bbox_fallback:disabled'
+    if dec_faces is not None and dec_faces.size > 0:
+        photo_rgb_for_detect = photo_np
+        if subject_alpha is not None and subject_alpha.size > 0:
+            # Composite alpha over neutral gray so face detector sees a clean subject.
+            a = subject_alpha.astype(np.float32) / 255.0
+            if a.ndim == 2: a = a[..., None]
+            photo_rgb_for_detect = (photo_np.astype(np.float32) * a
+                                    + 127.0 * (1 - a)).astype(np.uint8)
+        P = _detect_face_landmarks_5pt(photo_rgb_for_detect)
+        if P is None:
+            align_status = 'bbox_fallback:no_face_on_photo'
+        else:
+            # Render mesh at same projection basis (u_vec, v_vec, w_vec, v_min, v_max)
+            render_rgb, render_scale, render_center, _vc_r = _render_mesh_gray_for_align(
+                verts_np, dec_faces, u_vec, v_vec, w_vec, v_min, v_max,
+                img_h=512, img_w=512,
+            )
+            R = _detect_face_landmarks_5pt(render_rgb)
+            if R is None:
+                align_status = 'bbox_fallback:no_face_on_render'
+            else:
+                # Map render_px -> mesh_uv (invert render mapping), then mesh_uv -> photo_px
+                # via the CURRENT (bbox) bake mapping. Result is "where the bake currently
+                # thinks the mesh's face landmarks land on the photo".
+                # render_px = render_center + render_scale * (mesh_uv - v_center) with Y flip
+                # so mesh_uv = ((render_px - render_center) / render_scale) with Y unflip + v_center
+                R_centered = R - render_center
+                R_centered[:, 1] *= -1.0
+                mesh_uv_R = R_centered / render_scale + v_center
+                # Bake photo_px = img_center + scale_xy * (mesh_uv - v_center) with Y flip
+                cent = mesh_uv_R - v_center
+                cent[:, 1] *= -1.0
+                Mp = cent * scale_xy + img_center
+
+                # Mirror-sign check: photo eye ordering left→right should match Mp
+                sgn_ok = np.sign(P[1, 0] - P[0, 0]) == np.sign(Mp[1, 0] - Mp[0, 0])
+                if not sgn_ok:
+                    align_status = 'bbox_fallback:mirror_sign_mismatch'
+                else:
+                    # Similarity: P = s * Mp + t
+                    P_c = P.mean(0); M_c = Mp.mean(0)
+                    P_r = np.linalg.norm(P - P_c, axis=1)
+                    M_r = np.linalg.norm(Mp - M_c, axis=1)
+                    s = float(np.median(P_r) / max(np.median(M_r), 1e-6))
+                    t = P_c - s * M_c
+                    # Sanity gate
+                    max_translate = 0.35 * max(img_h, img_w)
+                    if not (0.6 < s < 1.6) or np.any(np.abs(t) > max_translate):
+                        align_status = f'bbox_fallback:sanity s={s:.2f} t={t.round(1).tolist()}'
+                    else:
+                        # Fold into mapping: new_scale_xy = s * old; new_img_center = s * old + t
+                        scale_xy = scale_xy * s
+                        img_center = s * img_center + t
+                        align_status = f'landmark_sim s={s:.3f} t={t.round(1).tolist()}'
+                        # redefine w2i to use updated params
+                        def w2i(pts):
+                            cent = pts - v_center
+                            cent[:, 1] *= -1.0
+                            return cent * scale_xy + img_center
+    print(f"      align: {align_status}", flush=True)
 
     tri_orig_idx = vmapping[faces_uv]                        # (N, 3) vertex indices in original mesh
     tri_world_pts = verts_np[tri_orig_idx]                    # (N, 3, 3)
@@ -461,6 +659,7 @@ def run_module_wrap_v21(cfg: ModuleWrapV21Config):
         clahe_clip=cfg.clahe_clip, clahe_tile=cfg.clahe_tile,
         front_offset_deg=cfg.wrap_front_offset,
         subject_alpha=subject_alpha,
+        dec_faces=dec_faces,     # V21h.4: enables landmark-similarity fold-in
     )
     atlas_for_gltf = atlas_rgb[::-1].copy()   # glTF UV convention
 
