@@ -302,8 +302,7 @@ def handler(job: dict) -> dict:
                     from pipeline_v14 import run_pipeline_v14 as _run_pipeline
 
                 if pipeline_version == "v21":
-                    if in_mesh is None:
-                        raise ValueError("pipeline_version=v21 requires mesh_b64 or mesh_url")
+                    # V21e: mesh optional — pipeline_v21 auto-runs TripoSG when input_mesh is None
                     cfg_kwargs = dict(
                         input_image=in_img, input_mesh=in_mesh, output=output,
                         workdir=Path("/models"),
