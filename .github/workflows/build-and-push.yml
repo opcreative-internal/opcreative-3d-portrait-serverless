@@ -121,3 +121,5 @@ jobs:
 # V21h.1 Fable v3 root-cause: xatlas mp.Queue drain fix + bgremove out[0][0] + log_tail 300 20260726-095500
 
 # V21h.2 Fable v3 hidden-bug: unwrap_uvs str-guard + mediapipe Tasks API + blazeface + numpy<2 20260726-122500
+
+# V21h.3 Fable v3 issues-1-2-4-5: autofront gate+prior+keylight + subject-alpha bbox + GLB 2048 preview + integrity check + BG-emit-RGBA 20260726-141000
