@@ -58,7 +58,10 @@ class PipelineV21Config:
     seed: int = 42
 
     # Wrap (V21: EXPLICIT direction, no auto-detect)
-    wrap_direction: str = "front"    # front | back | left | right
+    wrap_direction: str = "front"    # front | back | left | right  (V21 preset)
+    # V21c free rotation: azimuth+elevation override wrap_direction when set
+    wrap_azimuth: Optional[float] = None    # 0..360 degrees
+    wrap_elevation: Optional[float] = None  # -90..90 degrees
     flip_h: bool = False
     flip_v: bool = False
     brightness: float = 0.0          # -100..100 applied to input image before bake
