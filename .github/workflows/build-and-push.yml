@@ -117,3 +117,5 @@ jobs:
 # V21h Fable v3 mesh-cache: expose stageA URL for wrap-only re-render 20260726-002500
 
 # V21h-fix Fable v3 Bugs A+B+C+D: true ortho basis + z-buffer + auto-front + BGremove 20260726-004500
+
+# resume trigger 20260726-074427
