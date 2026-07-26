@@ -586,11 +586,19 @@ def handler(job: dict) -> dict:
             return result
 
     except Exception as e:
-        return {
+        result = {
             "error": str(e),
             "traceback": traceback.format_exc(),
             "handler_wall_s": round(time.time() - t0, 2),
         }
+        # V21e: attach log_tail even on failure so we can see what TripoSG or wrap actually printed
+        try:
+            if 'log_path' in locals() and log_path.exists():
+                lines = log_path.read_text(errors="replace").splitlines()
+                result["log_tail_on_error"] = "\n".join(lines[-80:])
+        except Exception:
+            pass
+        return result
 
 
 if __name__ == "__main__":
