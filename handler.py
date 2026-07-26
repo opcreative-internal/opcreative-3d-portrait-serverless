@@ -493,7 +493,18 @@ def handler(job: dict) -> dict:
                         cfg_kwargs["f_smooth_ring_depth"] = int(job_input.get("f_smooth_ring_depth", 2))
                         cfg_kwargs["f_smooth_lambda"] = float(job_input.get("f_smooth_lambda", 0.5))
                 cfg = _PipelineCfg(**cfg_kwargs)
-                _run_pipeline(cfg)
+                # V21f: capture run.log tail BEFORE re-raising so log survives tmpdir cleanup
+                try:
+                    _run_pipeline(cfg)
+                except Exception:
+                    _tail = ""
+                    try:
+                        if log_path.exists():
+                            _lines = log_path.read_text(errors="replace").splitlines()
+                            _tail = "\n".join(_lines[-100:])
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"pipeline_{pipeline_version} failed. log_tail:\n{_tail}\n(original traceback follows)")
 
             # ---- Collect outputs ----
             stem = output.stem
