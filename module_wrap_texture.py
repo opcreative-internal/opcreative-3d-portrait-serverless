@@ -94,7 +94,15 @@ def unwrap_uvs(mesh, target_faces, timeout_s):
     p.join(10)
     if p.is_alive():
         p.terminate(); p.join(5)
-    if isinstance(result, tuple) and result and result[0] == "ERROR":
+    # V21h.2 Fable v3: guard against numpy-2 elementwise `==` on ndarray.
+    # Old check `if isinstance(result, tuple) and result and result[0] == "ERROR"`
+    # short-circuited to elementwise `uvs_ndarray == "ERROR"` under numpy>=1.25,
+    # then `and` on that bool array raised "truth value of an array with more than
+    # one element is ambiguous" — TORCHING every successful xatlas result and
+    # forcing the trivial-per-wedge fallback. Every V21 render to date has therefore
+    # shipped fragmented UVs; V21h.2 is the first with real xatlas atlas.
+    if (isinstance(result, tuple) and len(result) == 2
+            and isinstance(result[0], str) and result[0] == "ERROR"):
         raise RuntimeError(f"xatlas: {result[1]}")
     uvs, indices, vmapping = result
     return (np.asarray(uvs, dtype=np.float32),
