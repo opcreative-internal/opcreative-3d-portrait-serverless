@@ -103,9 +103,13 @@ def run_pipeline_v21(cfg: PipelineV21Config) -> Path:
     if cfg.run_module_a:
         print("\n>>>>> STAGE A (TripoSG image-to-mesh, auto-triggered) <<<<<", flush=True)
         from module_a_retune import ModuleAConfig, run_module_a
+        # Dockerfile clones TripoSG to /opt/TripoSG (not /workspace/TripoSG default).
+        # Prefer /opt/TripoSG if present.
+        _triposg = Path("/opt/TripoSG") if Path("/opt/TripoSG").exists() else Path("/workspace/TripoSG")
         a_out = cfg.output.parent / f"{cfg.output.stem}_stageA.glb"
         a_cfg = ModuleAConfig(
             input_image=cfg.input_image, output_mesh=a_out,
+            triposg_repo=_triposg,
             num_inference_steps=cfg.a_num_inference_steps,
             guidance_scale=cfg.a_guidance_scale,
             faces=cfg.a_faces, seed=cfg.a_seed,
