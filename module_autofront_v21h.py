@@ -68,7 +68,12 @@ def _render_gray(verts: np.ndarray, faces: np.ndarray, az: float, el: float,
     v0 = verts[faces[:, 0]]; v1 = verts[faces[:, 1]]; v2 = verts[faces[:, 2]]
     face_norm = np.cross(v1 - v0, v2 - v0)
     face_norm /= (np.linalg.norm(face_norm, axis=1, keepdims=True) + 1e-9)
-    lam = np.maximum(0.0, face_norm @ w_vec)   # 0..1
+    # V21h.3 Fable v3: offset key light instead of headlight. Headlight (light==camera)
+    # produces near-shadow-free renders where nose/eye-socket gradients disappear, and
+    # BlazeFace has nothing to lock onto. Key light offset up-right restores gradients.
+    light = w_vec + 0.5 * u_vec + 0.6 * v_vec
+    light /= (np.linalg.norm(light) + 1e-9)
+    lam = np.maximum(0.0, face_norm @ light)   # 0..1 with real shadows
     shade = np.clip(40 + 180.0 * lam, 0, 255).astype(np.uint8)
     front_mask = (face_norm @ w_vec) > 0.02
 
@@ -187,11 +192,17 @@ def auto_detect_front_azimuth(mesh_path: Path,
     best_i = int(np.argmax(scores))
     best_score = scores[best_i]
     best_az = az_list[best_i]
-    # V21h.2 Fable v3: gate dropped 0.10 → 0.05 since BlazeFace scores lower on
-    # synthetic Lambert renders than on photos. If everything still <0.05, fall to 0°.
-    if best_score < 0.05:
-        print(f"      [autofront] WARN best_score={best_score:.3f} < 0.05 -> "
-              f"detection unreliable, using 0° default", flush=True)
+    # V21h.3 Fable v3: 0.2 was a false-positive noise floor on gray Lambert renders.
+    # (a) Absolute gate 0.30 — anything below is shape-noise, not a face.
+    # (b) Margin-over-az=0 prior — TripoSG is image-conditioned with camera at +Z,
+    #     so az=0 IS the canonical front unless something else clearly beats it.
+    score_at_0 = scores[0]   # az=0° is the TripoSG canonical front prior
+    if best_score < 0.30:
+        print(f"      [autofront] best={best_score:.3f}@{best_az:.0f}° < 0.30 gate -> keeping 0° default", flush=True)
+        return 0.0
+    if best_i != 0 and best_score < score_at_0 + 0.15:
+        print(f"      [autofront] {best_score:.3f}@{best_az:.0f}° beats az=0 "
+              f"({score_at_0:.3f}) by <0.15 -> keeping 0° (prior wins)", flush=True)
         return 0.0
     print(f"      [autofront] BEST az={best_az:.1f}° score={best_score:.3f}", flush=True)
     return float(best_az)
