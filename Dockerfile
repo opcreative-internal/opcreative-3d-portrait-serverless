@@ -62,9 +62,9 @@ RUN python -m pip install \
 # 3. TripoSG's own requirements.txt is skipped because `diso` in it kills the whole
 #    `pip install -r` transaction (single-shot atomic install)
 RUN python -m pip install \
-        peft==0.11.1 \
-        jaxtyping==0.2.34 \
-        typeguard==4.3.0
+        peft \
+        jaxtyping \
+        typeguard==2.13.3
 
 RUN git clone --depth 1 https://github.com/VAST-AI-Research/TripoSG.git /opt/TripoSG \
     && rm -rf /opt/TripoSG/.git
