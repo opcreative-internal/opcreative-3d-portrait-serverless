@@ -39,6 +39,15 @@ MODULES = [
     "diffusers",
     "transformers",
     "accelerate",
+    # V21f: TripoSG import chain (Fable v3 verdict — catch the diso/peft/jaxtyping cascade at build time)
+    "peft",
+    "jaxtyping",
+    "typeguard",
+    "diso",                                 # stubbed at /opt/TripoSG/diso.py
+    "triposg",
+    "triposg.pipelines",
+    "triposg.pipelines.pipeline_triposg",
+    "triposg.inference_utils",
 ]
 
 failed = []
@@ -81,5 +90,19 @@ try:
     print("DAv2 vitb cached:", p)
 except Exception as e:
     print("DAv2 cache check warning:", e)
+
+# Verify TripoSG weights baked at expected local_dir (module_a_retune uses cwd=/opt/TripoSG,
+# scripts/inference_triposg.py uses snapshot_download(local_dir='pretrained_weights/...'))
+import os as _os
+_TRIPO_WEIGHTS = "/opt/TripoSG/pretrained_weights/TripoSG"
+_RMBG_WEIGHTS  = "/opt/TripoSG/pretrained_weights/RMBG-1.4"
+for p in (_TRIPO_WEIGHTS, _RMBG_WEIGHTS):
+    if _os.path.isdir(p) and _os.listdir(p):
+        n = sum(_os.path.getsize(_os.path.join(dp, f))
+                for dp, _dn, fn in _os.walk(p) for f in fn)
+        print(f"OK weights {p}: {n/1024/1024:.1f} MB, {len(_os.listdir(p))} entries")
+    else:
+        print(f"!! MISSING weights dir {p}")
+        sys.exit(3)
 
 print("=== VERIFY DONE ===")
