@@ -118,10 +118,4 @@ jobs:
 
 # V21h-fix Fable v3 Bugs A+B+C+D: true ortho basis + z-buffer + auto-front + BGremove 20260726-004500
 
-# resume trigger 20260726-074427
-
-# resume trigger 20260726-074937
-
-# resume trigger 20260726-075553
-
-# resume trigger 20260726-075612
+# V21h.1 Fable v3 root-cause: xatlas mp.Queue drain fix + bgremove out[0][0] + log_tail 300 20260726-095500
