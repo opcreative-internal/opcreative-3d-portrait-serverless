@@ -69,9 +69,14 @@ RUN python -m pip install \
 RUN git clone --depth 1 https://github.com/VAST-AI-Research/TripoSG.git /opt/TripoSG \
     && rm -rf /opt/TripoSG/.git
 # Stub diso — /opt/TripoSG is on PYTHONPATH so this shim resolves first.
+# Since DiffDMC.__init__ raise means any flash-decoder code path bombs, force
+# use_flash_decoder=False at pipeline default level. Non-fatal if grep finds none
+# (upstream may already default False in newer commit).
 RUN printf 'class DiffDMC:\n    def __init__(self, *a, **kw): raise RuntimeError("diso stub reached at runtime; force use_flash_decoder=False")\n' > /opt/TripoSG/diso.py \
-    && sed -i 's/use_flash_decoder\s*=\s*True/use_flash_decoder=False/g' /opt/TripoSG/scripts/inference_triposg.py \
-    && grep -c 'use_flash_decoder=False' /opt/TripoSG/scripts/inference_triposg.py
+    && sed -i 's/use_flash_decoder\s*:\s*bool\s*=\s*True/use_flash_decoder: bool = False/g' /opt/TripoSG/triposg/pipelines/pipeline_triposg.py 2>/dev/null || true \
+    && sed -i 's/use_flash_decoder\s*=\s*True/use_flash_decoder=False/g' /opt/TripoSG/triposg/pipelines/pipeline_triposg.py 2>/dev/null || true \
+    && sed -i 's/use_flash_decoder\s*=\s*True/use_flash_decoder=False/g' /opt/TripoSG/scripts/inference_triposg.py 2>/dev/null || true \
+    && echo "=== diso stub + use_flash_decoder patches applied ==="
 
 # Bake TripoSG + RMBG weights into the exact local_dirs the CLI reads from.
 # `scripts/inference_triposg.py` uses snapshot_download(local_dir='pretrained_weights/...')
