@@ -80,6 +80,13 @@ class PipelineV21Config:
     wrap_target_faces: int = 60_000
     wrap_xatlas_timeout_s: int = 180
 
+    # V21h Fable v3 Bug C: 8-azimuth face-detect on TripoSG mesh to find true front.
+    # If False, wrap_front_offset defaults 0 (identity — assumes mesh front == +Z).
+    autofront_enabled: bool = True
+    autofront_n_azimuths: int = 8
+    # V21h Fable v3 Bug D: BG-remove input photo before wrap bake (RMBG-1.4 baked in image).
+    bgremove_enabled: bool = True
+
     dry_run: bool = False
 
 
@@ -153,19 +160,60 @@ def run_pipeline_v21(cfg: PipelineV21Config) -> Path:
         )
         run_module_e_ssle(e_cfg)
 
-    # WRAP TEXTURE V21 (explicit direction, no auto-detect)
+    # WRAP TEXTURE V21h (true orthonormal projection + normal cull + z-buffer + auto-front)
     if cfg.run_module_wrap:
-        print(f"\n>>>>> STAGE WRAP V21 (dir={cfg.wrap_direction}) <<<<<", flush=True)
+        # V21h Bug C: auto-detect mesh's true "front" via 8-azimuth MediaPipe face-scan.
+        # Runs on the raw TripoSG mesh BEFORE C+D face relief (which shouldn't move landmarks much,
+        # but stageA is cleaner). Falls back to 0° if detection fails on all views.
+        front_offset = 0.0
+        if cfg.autofront_enabled:
+            print(f"\n>>>>> STAGE AUTO-FRONT (V21h Bug C — {cfg.autofront_n_azimuths} azimuths) <<<<<",
+                  flush=True)
+            try:
+                from module_autofront_v21h import auto_detect_front_azimuth
+                # Prefer stageA mesh if available (untextured, cleaner silhouette).
+                autofront_mesh = parent / f"{stem}_stageA.glb"
+                if not autofront_mesh.exists():
+                    autofront_mesh = current_mesh
+                front_offset = auto_detect_front_azimuth(
+                    autofront_mesh,
+                    n_azimuths=cfg.autofront_n_azimuths,
+                    debug_dir=parent / f"{stem}_autofront_debug",
+                )
+                print(f"  auto-front offset = {front_offset:.1f}°", flush=True)
+            except Exception as e:
+                print(f"  autofront failed: {e} -- using 0° default", flush=True)
+
+        # V21h Bug D: background-remove input photo before wrap
+        wrap_input_image = cfg.input_image
+        if cfg.bgremove_enabled:
+            print("\n>>>>> STAGE BG-REMOVE (V21h Bug D — RMBG-1.4) <<<<<", flush=True)
+            try:
+                from module_bgremove_v21h import remove_background
+                from PIL import Image
+                bg_img = Image.open(cfg.input_image).convert("RGB")
+                bg_out_img = remove_background(bg_img, gray_replace=128)
+                bg_out_path = parent / f"{stem}_bgremoved.png"
+                bg_out_img.save(bg_out_path)
+                wrap_input_image = bg_out_path
+                print(f"  bg-removed image -> {bg_out_path}", flush=True)
+            except Exception as e:
+                print(f"  bgremove failed: {e} -- using original image", flush=True)
+
+        print(f"\n>>>>> STAGE WRAP V21h (dir={cfg.wrap_direction} az={cfg.wrap_azimuth} "
+              f"el={cfg.wrap_elevation} front_offset={front_offset:.1f}) <<<<<", flush=True)
         from module_wrap_texture_v21 import ModuleWrapV21Config, run_module_wrap_v21
         wrap_stem = parent / stem
         w_cfg = ModuleWrapV21Config(
-            input_mesh=current_mesh, input_image=cfg.input_image, out_stem=wrap_stem,
+            input_mesh=current_mesh, input_image=wrap_input_image, out_stem=wrap_stem,
             target_height_mm=cfg.target_height_mm,
             atlas_res=cfg.wrap_atlas_res,
             xatlas_target_faces=cfg.wrap_target_faces,
             xatlas_timeout_s=cfg.wrap_xatlas_timeout_s,
             clahe_clip=cfg.wrap_clahe_clip, clahe_tile=cfg.wrap_clahe_tile,
             wrap_direction=cfg.wrap_direction,
+            wrap_azimuth=cfg.wrap_azimuth, wrap_elevation=cfg.wrap_elevation,
+            wrap_front_offset=front_offset,
             flip_h=cfg.flip_h, flip_v=cfg.flip_v,
             brightness=cfg.brightness, contrast=cfg.contrast,
         )
