@@ -119,3 +119,5 @@ jobs:
 # V21h-fix Fable v3 Bugs A+B+C+D: true ortho basis + z-buffer + auto-front + BGremove 20260726-004500
 
 # V21h.1 Fable v3 root-cause: xatlas mp.Queue drain fix + bgremove out[0][0] + log_tail 300 20260726-095500
+
+# V21h.2 Fable v3 hidden-bug: unwrap_uvs str-guard + mediapipe Tasks API + blazeface + numpy<2 20260726-122500
