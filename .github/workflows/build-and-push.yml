@@ -1,4 +1,4 @@
-﻿name: Build and Push GHCR
+name: Build and Push GHCR
 
 on:
   push:
@@ -93,3 +93,5 @@ jobs:
 # V20.1 trigger 20260725-155844
 
 # V21b trigger 20260725-191637
+
+# V21c free-rotation trigger 20260725-200000
