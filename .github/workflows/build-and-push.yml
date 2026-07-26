@@ -99,3 +99,5 @@ jobs:
 # V21e auto-TripoSG trigger 20260725-213800
 
 # V21e-fix triposg /opt path 20260725-215000
+
+# V21e-log log_tail_on_error 20260725-215500
