@@ -217,18 +217,20 @@ def unwrap_body_uvs(verts_np, body_faces_np, target_faces: int = 15_000,
     q = ctx.Queue()
     p = ctx.Process(target=_xatlas_worker, args=(dec_verts, dec_faces, q))
     p.start()
-    p.join(timeout_s)
-    if p.is_alive():
-        print(f"        xatlas TIMEOUT after {timeout_s}s — killing subprocess",
-              flush=True)
-        p.terminate()
-        p.join()
-        raise TimeoutError(f"xatlas exceeded {timeout_s}s")
-
+    # V21h.1 Fable v3: same drain-before-join fix as module_wrap_texture.
     try:
-        result = q.get_nowait()
+        result = q.get(timeout=timeout_s)
     except Exception:
-        raise RuntimeError("xatlas subprocess exited but produced no result")
+        print(f"        xatlas TIMEOUT after {timeout_s}s (queue drain) — killing",
+              flush=True)
+        try:
+            if p.is_alive(): p.terminate()
+        finally:
+            p.join(5)
+        raise TimeoutError(f"xatlas exceeded {timeout_s}s")
+    p.join(10)
+    if p.is_alive():
+        p.terminate(); p.join(5)
     if isinstance(result, tuple) and result and result[0] == 'ERROR':
         raise RuntimeError(f"xatlas worker error: {result[1]}")
 
