@@ -49,7 +49,11 @@ class ModuleWrapV21Config:
     dry_run: bool = False
 
     # V21 explicit controls (replaces V19 wrap_auto_detect_view_dir).
-    wrap_direction: str = "front"   # front | back | left | right
+    wrap_direction: str = "front"   # front | back | left | right  (backward compat)
+    # V21c free rotation (per Kent real-test feedback: F/B/L/R too rigid).
+    # If wrap_azimuth or wrap_elevation set (not None), overrides wrap_direction.
+    wrap_azimuth: Optional[float] = None    # 0..360 degrees; 0=front(+Z), 90=right(+X), 180=back, 270=left
+    wrap_elevation: Optional[float] = None  # -90..90 degrees; 0=equator (default)
     flip_h: bool = False
     flip_v: bool = False
     brightness: float = 0.0         # -100..100
@@ -61,6 +65,14 @@ class ModuleWrapV21Config:
         self.out_stem = Path(self.out_stem)
         if self.wrap_direction not in ("front", "back", "left", "right"):
             raise ValueError(f"wrap_direction must be front|back|left|right, got {self.wrap_direction!r}")
+        # If neither azimuth nor elevation given, use preset enum
+        if self.wrap_azimuth is None and self.wrap_elevation is None:
+            preset_to_az = {"front": 0.0, "right": 90.0, "back": 180.0, "left": 270.0}
+            self.wrap_azimuth = preset_to_az.get(self.wrap_direction, 0.0)
+            self.wrap_elevation = 0.0
+        else:
+            if self.wrap_azimuth is None: self.wrap_azimuth = 0.0
+            if self.wrap_elevation is None: self.wrap_elevation = 0.0
 
 
 def _preprocess_image(pil_img, flip_h: bool, flip_v: bool,
@@ -80,6 +92,42 @@ def _preprocess_image(pil_img, flip_h: bool, flip_v: bool,
     if abs(c_factor - 1.0) > 1e-3:
         img = ImageEnhance.Contrast(img).enhance(c_factor)
     return img
+
+
+def _view_dir_from_azel(azimuth_deg: float, elevation_deg: float):
+    """V21c free rotation: azimuth/elevation -> unit view direction vector.
+    Convention: azimuth 0=front(+Z), 90=right(+X), 180=back(-Z), 270=left(-X);
+    elevation 0=equator, +90=above, -90=below.
+    Returns (dx, dy, dz) unit vector pointing FROM camera TOWARD subject.
+    """
+    import math
+    theta = math.radians(elevation_deg)
+    phi = math.radians(azimuth_deg)
+    # camera position on unit sphere; view_dir = -camera_pos (looks toward origin)
+    cx = math.sin(phi) * math.cos(theta)
+    cy = math.sin(theta)
+    cz = math.cos(phi) * math.cos(theta)
+    return (-cx, -cy, -cz)  # view direction (subject-facing)
+
+
+def _dir_axes_from_view(view_dir):
+    """Return (u_axis_idx, v_axis_idx, u_sign, v_sign, proj_axis_idx, proj_sign)
+    equivalent to _axes_for_direction but for arbitrary view direction.
+    Picks dominant axis of view_dir as projection axis; the other two form UV plane.
+    """
+    import math
+    dx, dy, dz = view_dir
+    ax = abs(dx); ay = abs(dy); az = abs(dz)
+    # Projection axis = dominant component
+    if az >= ax and az >= ay:
+        # Z-dominant: u=X, v=Y, proj=Z
+        return 0, 1, 1.0 if dz < 0 else -1.0, 1.0, 2, 1.0 if dz > 0 else -1.0
+    elif ax >= ay:
+        # X-dominant: u=Z, v=Y, proj=X
+        return 2, 1, 1.0 if dx > 0 else -1.0, 1.0, 0, 1.0 if dx > 0 else -1.0
+    else:
+        # Y-dominant (top/bottom view): u=X, v=Z, proj=Y
+        return 0, 2, 1.0, 1.0 if dy > 0 else -1.0, 1, 1.0 if dy > 0 else -1.0
 
 
 def _axes_for_direction(direction: str):
@@ -104,10 +152,12 @@ def _axes_for_direction(direction: str):
 
 def bake_ortho_texture_v21(photo_pil, verts_world, uvs, faces_uv, vmapping,
                            atlas_res, wrap_direction="front",
+                           azimuth_deg=None, elevation_deg=None,
                            clahe_clip=3.0, clahe_tile=16):
-    """V21 ortho bake with explicit direction (no auto-detect).
+    """V21c ortho bake with explicit direction OR free azimuth/elevation.
 
-    Same math as V18 bake_ortho_texture but with wrap_direction -> axis mapping.
+    If azimuth_deg or elevation_deg given (not None), uses view-dir math for
+    arbitrary 360-degree rotation. Otherwise falls back to wrap_direction enum.
     """
     import numpy as np
     from PIL import Image
@@ -121,7 +171,13 @@ def bake_ortho_texture_v21(photo_pil, verts_world, uvs, faces_uv, vmapping,
     gray_eq = clahe.apply(gray)
     photo_gray_rgb = cv2.cvtColor(gray_eq, cv2.COLOR_GRAY2RGB)
 
-    u_i, v_i, u_s, v_s, p_i, p_s = _axes_for_direction(wrap_direction)
+    if azimuth_deg is not None or elevation_deg is not None:
+        view_dir = _view_dir_from_azel(azimuth_deg or 0.0, elevation_deg or 0.0)
+        u_i, v_i, u_s, v_s, p_i, p_s = _dir_axes_from_view(view_dir)
+        print(f"      V21c free rotation: az={azimuth_deg} el={elevation_deg} view_dir={tuple(round(v,3) for v in view_dir)}",
+              flush=True)
+    else:
+        u_i, v_i, u_s, v_s, p_i, p_s = _axes_for_direction(wrap_direction)
 
     # world_xy analogue for chosen direction
     world_uv = np.stack([verts_world[:, u_i] * u_s,
@@ -250,14 +306,16 @@ def run_module_wrap_v21(cfg: ModuleWrapV21Config):
 
     print(f"      UV atlas verts={len(uvs):,} faces={len(faces_uv):,}", flush=True)
 
-    # 3. Preprocess input image + ortho bake with V21 direction axis
+    # 3. Preprocess input image + ortho bake with V21 direction axis OR V21c azimuth/elevation
     print(f"\n[3/5] Preprocess + ortho bake dir={cfg.wrap_direction} "
+          f"az={cfg.wrap_azimuth} el={cfg.wrap_elevation} "
           f"{cfg.atlas_res}x{cfg.atlas_res}", flush=True)
     photo = Image.open(cfg.input_image).convert("RGB")
     photo = _preprocess_image(photo, cfg.flip_h, cfg.flip_v, cfg.brightness, cfg.contrast)
     atlas_rgb, coverage = bake_ortho_texture_v21(
         photo, dec_verts, uvs, faces_uv, vmapping,
         cfg.atlas_res, wrap_direction=cfg.wrap_direction,
+        azimuth_deg=cfg.wrap_azimuth, elevation_deg=cfg.wrap_elevation,
         clahe_clip=cfg.clahe_clip, clahe_tile=cfg.clahe_tile,
     )
     atlas_for_gltf = atlas_rgb[::-1].copy()   # glTF UV convention
